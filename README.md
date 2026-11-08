@@ -5,10 +5,12 @@ Windows app that changes the key of a worship song chord chart (**PDF** or **Wor
 ## Use
 Full guide: [USER_GUIDE.md](USER_GUIDE.md)
 
-1. **Browse...** → pick the chord chart.
-2. The **current key** is detected from the `Key:` line (or the file name, or the first chord as a fallback).
-3. Pick the new key under **Change to**.
+1. **Drag the chord chart onto the window**, or click **Browse...**.
+2. The **current key** is detected from the `Key:` line (or the file name, or the first chord as a fallback) and marked with a dot.
+3. Click the new key under **Change to** (arrow keys work too).
 4. **Convert...** → choose where to save (name is pre-filled, e.g. `F Key - Song.pdf`).
+
+The window follows the Windows light/dark app theme and scales with per-monitor DPI.
 
 Download the latest `Chord Key Changer.exe` from **[Releases](../../releases)**. First run: Windows SmartScreen may warn because the exe is unsigned → *More info → Run anyway*.
 
@@ -40,7 +42,7 @@ GitHub Actions builds the exe and attaches it to a new Release automatically.
 ## Files
 | File | Purpose |
 |---|---|
-| `gui_windows.go` | Windows window, Open/Save dialogs (Win32, no libraries) |
+| `gui_windows.go` | Windows window and custom-drawn UI, Open/Save dialogs (Win32, no libraries) |
 | `transpose.go` | Chord transposition, key detection, PDF + DOCX conversion |
 | `pdf.go` | Minimal PDF reader/writer (xref tables/streams, object streams) |
 | `cli.go` | Command-line harness for testing on non-Windows |
