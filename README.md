@@ -23,13 +23,21 @@ Download the latest `Chord Key Changer.exe` from **[Releases](../../releases)**.
 - If the chord font is an embedded subset missing a symbol, the app warns — convert the .docx instead.
 
 ## PDFs from Mac apps
-PDFs written by macOS (`Quartz PDFContext` — Pages, Preview, Print to PDF) store each
-run in its own re-encoded font subset, so the character codes are not ASCII and the real
-text only exists in the font's `/ToUnicode` map. The app reads those now, so the key and
-the chords are detected normally. **Converting them is not possible**: a subset only
-carries the glyphs the document already used, so the letters a new key needs (often `B`,
-`b` or `#`) have no outline in the file. The app says which ones are missing and points
-you at the `.docx`.
+PDFs written by macOS (`Quartz PDFContext` — Pages, Preview, Print to PDF) are laid out
+differently from Word's and are handled on their own path:
+
+- Each run sits in its own re-encoded font subset, so the character codes are not ASCII;
+  the real text is read through the font's `/ToUnicode` map.
+- Quartz breaks text at arbitrary points ("Chorus" can arrive as `C` + `horus`), so
+  touching pieces are joined into words before anything is treated as a chord. A raised
+  sharp is folded into its chord (`D/F♯` → `F/A`), while a superscript extension like the
+  `7` in `Em⁷` stays where and how it was.
+- A subset only carries the glyphs the document already used, so a new key often needs a
+  letter that is not in the file at all (`B`, `b`, `#`). Those chords are re-set in
+  Helvetica — one of the 14 standard PDF fonts every viewer has, metrically identical to
+  the Arial these charts use — so nothing needs embedding.
+- Runs are positioned by the full graphics-state transform, since Quartz places some text
+  by the `cm` around it rather than by its own text matrix.
 
 ## Build
 Pure Go standard library, no dependencies.
@@ -42,11 +50,18 @@ GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o "
 go build -o chordkey . && ./chordkey "G Key - Song.pdf" out.pdf F
 ```
 
-## Release a new version
+## Releases
+**Every push to `main` is tested, built and published automatically** as its own release
+(`build-<n>`), marked latest. The newest exe is always at
+[Releases → latest](../../releases/latest).
+
+To publish a named version as well, push a tag (either case works):
+
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v1.2.0 && git push origin v1.2.0
 ```
-GitHub Actions builds the exe and attaches it to a new Release automatically.
+
+A failing `go test` stops the run before anything is published.
 
 ## Files
 | File | Purpose |

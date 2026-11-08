@@ -180,3 +180,118 @@ func TestBlockText(t *testing.T) {
 		}
 	}
 }
+
+// The graphics state is a stack: nested cm's compose and Q restores. Strings
+// whose bytes spell operators must not be read as operators.
+func TestTextCTMs(t *testing.T) {
+	c := "q 0.24 0 0 0.24 0 905.04 cm BT (q Q 1 2 3 4 5 6 cm) Tj ET Q " +
+		"q 0.5 0 0 0.5 10 20 cm q 2 0 0 2 0 0 cm BT (x) Tj ET Q BT (y) Tj ET Q " +
+		"BT <51> Tj ET"
+	got := textCTMs(c)
+	var at []int
+	for i := 0; i+1 < len(c); i++ {
+		if c[i:i+2] == "BT" {
+			at = append(at, i)
+		}
+	}
+	want := []mat{
+		{0.24, 0, 0, 0.24, 0, 905.04}, // plain, despite the operator-like string
+		{1, 0, 0, 1, 10, 20},          // nested: 2x inside 0.5x composes to 1x
+		{0.5, 0, 0, 0.5, 10, 20},      // inner Q restored the outer state
+		identity,                      // everything popped
+	}
+	if len(at) != len(want) {
+		t.Fatalf("found %d BT, want %d", len(at), len(want))
+	}
+	for i, p := range at {
+		if g := got[p]; g != want[i] {
+			t.Errorf("BT #%d: ctm = %v, want %v", i, g, want[i])
+		}
+	}
+}
+
+func TestTransposeWord(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		n    int
+		want string
+	}{
+		{"Em", 3, "Gm"},
+		{"D/F#", 3, "F/A"},
+		{"Key: G", 5, "Key: C"}, // the heading moves with the song
+		{"Chorus", 5, "Chorus"}, // a word that merely starts with a note does not
+		{"Intro:", 5, "Intro:"},
+	} {
+		if got := transposeWord(c.in, c.n); got != c.want {
+			t.Errorf("transposeWord(%q, %d) = %q, want %q", c.in, c.n, got, c.want)
+		}
+	}
+}
+
+// Quartz splits text at arbitrary points. These are the three shapes found in
+// real charts: a word split mid-way, a slash chord whose sharp is raised, and
+// a chord with a superscript extension.
+func TestQuartzTransposeGrouping(t *testing.T) {
+	pw := &pageWork{fonts: map[string]*fontInfo{
+		"TT12": {bold: true}, // no width table: falls back to the Arial metrics
+		"TT14": {bold: true},
+	}}
+	w := func(font string, sz float64, s string) float64 {
+		return pw.wd(&run{font: font, sz: sz}, s)
+	}
+	at := 0.0
+	add := func(font string, sz, y float64, s string) *run {
+		r := &run{font: font, sz: sz, x: at, nx: at, y: y, s: s}
+		at += w(font, sz, s)
+		pw.runs = append(pw.runs, r)
+		return r
+	}
+	c := add("TT12", 12, 100, "C")
+	horus := add("TT12", 12, 100, "horus")
+	at += 40
+	df := add("TT12", 12, 100, "D/F")
+	sharp := add("TT14", 8, 103, "#")
+	at += 40
+	em := add("TT12", 12, 100, "Em")
+	seven := add("TT14", 8, 103, "7")
+
+	pw.quartzTranspose(3)
+
+	if c.nw != "C" || horus.nw != "horus" {
+		t.Errorf("split word changed: %q %q, want it left alone", c.nw, horus.nw)
+	}
+	if df.nw != "F/A" || !sharp.blank || sharp.nw != "" {
+		t.Errorf("raised sharp: got %q + %q (blank=%v), want \"F/A\" with the sharp folded in", df.nw, sharp.nw, sharp.blank)
+	}
+	if em.nw != "Gm" || seven.nw != "7" || seven.blank {
+		t.Errorf("superscript extension: got %q + %q, want \"Gm\" + \"7\" kept separate", em.nw, seven.nw)
+	}
+}
+
+func TestSubsetEncoding(t *testing.T) {
+	enc := reverseUni(map[byte]string{'!': "C", '"': "m", '#': " ", '$': "C"})
+	if b, miss := encodeRun("Cm", enc); b != "!\"" || len(miss) != 0 {
+		t.Errorf("encode Cm = %q missing %q, want \"!\\\"\" with nothing missing", b, string(miss))
+	}
+	if _, miss := encodeRun("Bb", enc); string(miss) != "Bb" {
+		t.Errorf("missing for Bb = %q, want \"Bb\"", string(miss))
+	}
+}
+
+func TestFallbackMetrics(t *testing.T) {
+	if len(awBold) != 95 || len(awReg) != 95 {
+		t.Fatalf("width tables cover %d / %d glyphs, want all 95 printable ASCII", len(awBold), len(awReg))
+	}
+	for _, c := range []struct {
+		tbl  map[byte]int
+		ch   byte
+		want int
+	}{
+		{awBold, '|', 280}, {awBold, ':', 333}, {awBold, 'm', 889}, {awBold, 'b', 611},
+		{awReg, '|', 260}, {awReg, 'm', 833}, {awReg, 'b', 556},
+	} {
+		if got := c.tbl[c.ch]; got != c.want {
+			t.Errorf("width of %q = %d, want %d", c.ch, got, c.want)
+		}
+	}
+}

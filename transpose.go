@@ -373,9 +373,44 @@ func ConvertDocx(src []byte, n int) ([]byte, int, error) {
 
 // ---------- pdf ----------
 
-// Arial widths (/1000) for glyphs a transposition can introduce.
-var awBold = map[byte]int{' ': 278, '#': 556, 'b': 611, 'A': 722, 'B': 722, 'C': 722, 'D': 722, 'E': 667, 'F': 611, 'G': 778}
-var awReg = map[byte]int{' ': 278, '#': 556, 'b': 556, 'A': 667, 'B': 667, 'C': 722, 'D': 722, 'E': 667, 'F': 611, 'G': 778}
+// Helvetica / Arial advance widths (/1000) for printable ASCII, from the
+// standard Helvetica AFM metrics, which Arial shares. They size glyphs a
+// transposition introduces into a subset that lacks them, and whole runs
+// re-set in the standard fallback font - where a run like "||: F#m" needs
+// the bar and colon measured too, not just the note letters.
+var awBold = asciiWidths(
+	278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, // space ! " # $ % & ' ( ) * + , - . /
+	556, 556, 556, 556, 556, 556, 556, 556, 556, 556, // 0-9
+	333, 333, 584, 584, 584, 611, 975, // : ; < = > ? @
+	722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, // A-M
+	722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, // N-Z
+	333, 278, 333, 584, 556, 333, // [ \ ] ^ _ `
+	556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, // a-m
+	611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, // n-z
+	389, 280, 389, 584, // { | } ~
+)
+var awReg = asciiWidths(
+	278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+	556, 556, 556, 556, 556, 556, 556, 556, 556, 556,
+	278, 278, 584, 584, 584, 556, 1015,
+	667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833,
+	722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611,
+	278, 278, 278, 469, 556, 333,
+	556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833,
+	556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500,
+	334, 260, 334, 584,
+)
+
+func asciiWidths(w ...int) map[byte]int {
+	if len(w) != 95 {
+		panic("asciiWidths: need 95 widths for ' '..'~'")
+	}
+	m := make(map[byte]int, len(w))
+	for i, v := range w {
+		m[byte(' '+i)] = v
+	}
+	return m
+}
 
 var reBlk = regexp.MustCompile(`(?s)BT\s*/([^\s/\[\]()<>]+)\s+(-?[\d.]+)\s+Tf\s*1 0 0 1 (-?[\d.]+) (-?[\d.]+) Tm(.*?)\sET\b`)
 var reTJ = regexp.MustCompile(`(?s)\[(.*?)\]\s*TJ`)
@@ -400,7 +435,32 @@ type run struct {
 	s, nw  string
 	nx     float64
 	line   int
+
+	// Set only for Quartz-shaped blocks, which are written back by splicing
+	// spans rather than by rebuilding a fixed "1 0 0 1 x y Tm ... TJ" shape.
+	enc      map[rune]byte // real character -> this subset's code
+	xSt, xEn int           // span of the Tm x operand, absolute in content
+	fSt, fEn int           // span of the Tf font name, absolute in content
+	lits     []strLit      // spans of the block's string operands, absolute
+	fb       bool          // write in the standard fallback font instead
+	fbBold   bool
+	blank    bool // emptied: its text moved into the first run of its word
+
+	// Page x = ca*x + ce. Quartz places some runs by the Tm and others by the
+	// cm around them, so text-space x values from different runs are not
+	// comparable; only page x is. Zero ca means an ordinary run (identity).
+	ca, ce float64
 }
+
+func (r *run) scale() float64 {
+	if r.ca == 0 {
+		return 1
+	}
+	return r.ca
+}
+
+// px is the run's position on the page, in points.
+func (r *run) px() float64 { return r.scale()*r.x + r.ce }
 
 func unescapePDF(s string) string {
 	var b strings.Builder
@@ -554,6 +614,9 @@ func (d *PDF) loadPage(pg Page) (*pageWork, error) {
 		y, _ := strconv.ParseFloat(c[m[8]:m[9]], 64)
 		pw.runs = append(pw.runs, &run{st: m[0], en: m[1], font: font, sz: sz, x: x, y: y, s: s, nx: x})
 	}
+	if len(pw.runs) == 0 {
+		pw.quartzRuns()
+	}
 	// group runs into lines (superscripts sit a few points above the baseline)
 	idx := make([]*run, len(pw.runs))
 	copy(idx, pw.runs)
@@ -586,6 +649,28 @@ func (fi *fontInfo) width(ch byte) int {
 
 func (pw *pageWork) wd(r *run, s string) float64 {
 	fi := pw.fonts[r.font]
+	if r.fb {
+		// the standard fallback font: Helvetica shares Arial's metrics
+		tbl := awReg
+		if fi != nil && fi.bold {
+			tbl = awBold
+		}
+		t := 0
+		for i := 0; i < len(s); i++ {
+			if w, ok := tbl[s[i]]; ok {
+				t += w
+			} else {
+				t += 556
+			}
+		}
+		return float64(t) * r.sz / 1000
+	}
+	if r.enc != nil {
+		// a subset's codes, not the text, is what the width table is keyed by
+		if b, miss := encodeRun(s, r.enc); len(miss) == 0 {
+			s = b
+		}
+	}
 	t := 0
 	for i := 0; i < len(s); i++ {
 		t += fi.width(s[i])
@@ -681,12 +766,227 @@ func toUnicode(d *PDF, f *Dict) map[byte]string {
 var reBT = regexp.MustCompile(`(?s)BT\b(.*?)\bET\b`)
 var reNum6 = `(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+`
 var reTmAny = regexp.MustCompile(reNum6 + `Tm`)
-var reCmAny = regexp.MustCompile(reNum6 + `cm`)
 var reTfAny = regexp.MustCompile(`/([^\s/\[\]()<>]+)\s+(-?[\d.]+)\s+Tf`)
 
 type placedText struct {
 	x, y float64
 	s    string
+}
+
+// strLit is one string operand of a content stream and where it sits.
+type strLit struct {
+	st, en int
+	raw    string
+}
+
+// blockStrings finds every string operand in a BT..ET body, keeping the span
+// so it can be written back in place.
+func blockStrings(body string, base int) []strLit {
+	var out []strLit
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '(':
+			depth, j := 1, i+1
+			for ; j < len(body) && depth > 0; j++ {
+				if body[j] == '\\' {
+					j++
+					continue
+				}
+				if body[j] == '(' {
+					depth++
+				} else if body[j] == ')' {
+					depth--
+				}
+			}
+			if j-1 > i {
+				out = append(out, strLit{base + i, base + j, unescapePDF(body[i+1 : j-1])})
+			}
+			i = j - 1
+		case '<':
+			if i+1 < len(body) && body[i+1] == '<' { // a dictionary, not a string
+				return out
+			}
+			j := strings.IndexByte(body[i:], '>')
+			if j < 0 {
+				return out
+			}
+			h := body[i+1 : i+j]
+			var sb strings.Builder
+			for k := 0; k+1 < len(h); k += 2 {
+				v, err := strconv.ParseUint(h[k:k+2], 16, 16)
+				if err != nil {
+					break
+				}
+				sb.WriteByte(byte(v))
+			}
+			out = append(out, strLit{base + i, base + i + j + 1, sb.String()})
+			i += j
+		}
+	}
+	return out
+}
+
+// mat is a PDF transformation matrix [a b c d e f].
+type mat struct{ a, b, c, d, e, f float64 }
+
+var identity = mat{1, 0, 0, 1, 0, 0}
+
+// then returns m followed by n, the way "cm" composes with the CTM.
+func (m mat) then(n mat) mat {
+	return mat{
+		m.a*n.a + m.b*n.c, m.a*n.b + m.b*n.d,
+		m.c*n.a + m.d*n.c, m.c*n.b + m.d*n.d,
+		m.e*n.a + m.f*n.c + n.e, m.e*n.b + m.f*n.d + n.f,
+	}
+}
+
+func isPDFSpace(c byte) bool {
+	return c == ' ' || c == '\n' || c == '\r' || c == '\t' || c == '\f' || c == 0
+}
+
+func isPDFDelim(c byte) bool {
+	switch c {
+	case '(', ')', '<', '>', '[', ']', '{', '}', '/', '%':
+		return true
+	}
+	return false
+}
+
+// textCTMs walks a content stream tracking q/Q/cm and returns the transform
+// in force at each BT, keyed by the BT's offset. Quartz nests its states and
+// places some runs entirely through the cm, so guessing from the nearest cm
+// is not enough. Strings are skipped so their bytes are never read as
+// operators.
+func textCTMs(c string) map[int]mat {
+	out := map[int]mat{}
+	ctm := identity
+	var stack []mat
+	var nums []float64
+	for i := 0; i < len(c); {
+		ch := c[i]
+		switch {
+		case ch == '(':
+			depth := 1
+			for i++; i < len(c) && depth > 0; i++ {
+				switch c[i] {
+				case '\\':
+					i++
+				case '(':
+					depth++
+				case ')':
+					depth--
+				}
+			}
+			nums = nums[:0]
+			continue
+		case ch == '<' && i+1 < len(c) && c[i+1] == '<', ch == '>' && i+1 < len(c) && c[i+1] == '>':
+			i += 2
+			continue
+		case ch == '<':
+			k := strings.IndexByte(c[i:], '>')
+			if k < 0 {
+				return out
+			}
+			i += k + 1
+			nums = nums[:0]
+			continue
+		case ch == '%':
+			for i < len(c) && c[i] != '\n' && c[i] != '\r' {
+				i++
+			}
+			continue
+		case ch == '/':
+			i++
+			for i < len(c) && !isPDFSpace(c[i]) && !isPDFDelim(c[i]) {
+				i++
+			}
+			nums = nums[:0]
+			continue
+		case isPDFSpace(ch) || isPDFDelim(ch):
+			i++
+			continue
+		}
+		st := i
+		for i < len(c) && !isPDFSpace(c[i]) && !isPDFDelim(c[i]) {
+			i++
+		}
+		tok := c[st:i]
+		if v, err := strconv.ParseFloat(tok, 64); err == nil {
+			nums = append(nums, v)
+			continue
+		}
+		switch tok {
+		case "q":
+			stack = append(stack, ctm)
+		case "Q":
+			if len(stack) > 0 {
+				ctm = stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+			}
+		case "cm":
+			if k := len(nums) - 6; k >= 0 {
+				ctm = mat{nums[k], nums[k+1], nums[k+2], nums[k+3], nums[k+4], nums[k+5]}.then(ctm)
+			}
+		case "BT":
+			out[st] = ctm
+		}
+		nums = nums[:0]
+	}
+	return out
+}
+
+// decodeWith turns a run's raw bytes into real text through /ToUnicode.
+func decodeWith(raw string, uni map[byte]string) string {
+	if uni == nil {
+		return raw
+	}
+	var sb strings.Builder
+	for i := 0; i < len(raw); i++ {
+		if u, ok := uni[raw[i]]; ok {
+			sb.WriteString(u)
+		} else {
+			sb.WriteByte(raw[i])
+		}
+	}
+	return sb.String()
+}
+
+// reverseUni maps real characters back to this subset's codes. A subset only
+// carries the glyphs the document already used, so this is also the list of
+// what can be written at all.
+func reverseUni(uni map[byte]string) map[rune]byte {
+	codes := make([]int, 0, len(uni))
+	for c := range uni {
+		codes = append(codes, int(c))
+	}
+	sort.Ints(codes)
+	enc := map[rune]byte{}
+	for _, c := range codes {
+		r := []rune(uni[byte(c)])
+		if len(r) != 1 {
+			continue
+		}
+		if _, dup := enc[r[0]]; !dup {
+			enc[r[0]] = byte(c)
+		}
+	}
+	return enc
+}
+
+// encodeRun writes text in a subset's own codes, reporting any character the
+// font simply does not carry.
+func encodeRun(s string, enc map[rune]byte) (string, []rune) {
+	var sb strings.Builder
+	var miss []rune
+	for _, r := range s {
+		c, ok := enc[r]
+		if !ok {
+			miss = append(miss, r)
+			continue
+		}
+		sb.WriteByte(c)
+	}
+	return sb.String(), miss
 }
 
 // blockText pulls the text out of one BT..ET block. tjText only accepts the
@@ -742,19 +1042,7 @@ func num(s string) float64 { v, _ := strconv.ParseFloat(s, 64); return v }
 func textLines(pw *pageWork) []string {
 	c := string(pw.content)
 
-	// Quartz emits "q <cm> BT ... ET Q" per run, so the transform that places
-	// a block is the last cm before it.
-	type cmAt struct {
-		at         int
-		a, d, e, f float64
-	}
-	var cms []cmAt
-	for _, m := range reCmAny.FindAllStringSubmatch(c, -1) {
-		cms = append(cms, cmAt{0, num(m[1]), num(m[4]), num(m[5]), num(m[6])})
-	}
-	for i, m := range reCmAny.FindAllStringIndex(c, -1) {
-		cms[i].at = m[0]
-	}
+	ctms := textCTMs(c)
 
 	var segs []placedText
 	for _, m := range reBT.FindAllStringSubmatchIndex(c, -1) {
@@ -769,25 +1057,15 @@ func textLines(pw *pageWork) []string {
 			continue
 		}
 		txt := raw
-		if fi := pw.fonts[mf[1]]; fi != nil && fi.uni != nil {
-			var sb strings.Builder
-			for i := 0; i < len(raw); i++ {
-				if u, ok := fi.uni[raw[i]]; ok {
-					sb.WriteString(u)
-				} else {
-					sb.WriteByte(raw[i])
-				}
-			}
-			txt = sb.String()
+		if fi := pw.fonts[mf[1]]; fi != nil {
+			txt = decodeWith(raw, fi.uni)
 		}
-		a, dd, e, f := 1.0, 1.0, 0.0, 0.0
-		for _, cm := range cms {
-			if cm.at > m[0] {
-				break
-			}
-			a, dd, e, f = cm.a, cm.d, cm.e, cm.f
+		ctm, ok := ctms[m[0]]
+		if !ok {
+			ctm = identity
 		}
-		segs = append(segs, placedText{a*num(mt[5]) + e, dd*num(mt[6]) + f, txt})
+		tx, ty := num(mt[5]), num(mt[6])
+		segs = append(segs, placedText{ctm.a*tx + ctm.c*ty + ctm.e, ctm.b*tx + ctm.d*ty + ctm.f, txt})
 	}
 	if len(segs) == 0 {
 		return nil
@@ -817,6 +1095,64 @@ func textLines(pw *pageWork) []string {
 	}
 	flush()
 	return out
+}
+
+// quartzRuns builds rewritable runs from Quartz-shaped content, where the
+// text matrix comes before the font, the point size lives in that matrix and
+// each run sits in its own cm. It is only used when the Word-shaped pattern
+// found nothing, so that path is never disturbed.
+//
+// Positions and widths stay in the block's own text space (the Tm e value and
+// the matrix scale), which is the space the width table is in. Only the y used
+// to group lines goes through the cm, so that threshold stays in points.
+func (pw *pageWork) quartzRuns() {
+	c := string(pw.content)
+	ctms := textCTMs(c)
+	for _, m := range reBT.FindAllStringSubmatchIndex(c, -1) {
+		body := c[m[2]:m[3]]
+		mt := reTmAny.FindStringSubmatchIndex(body)
+		mfi := reTfAny.FindStringSubmatchIndex(body)
+		if mt == nil || mfi == nil {
+			continue
+		}
+		fname := body[mfi[2]:mfi[3]]
+		fi := pw.fonts[fname]
+		if fi == nil || !fi.simple || fi.uni == nil {
+			continue
+		}
+		lits := blockStrings(body, m[2])
+		if len(lits) == 0 {
+			continue
+		}
+		var raw strings.Builder
+		for _, l := range lits {
+			raw.WriteString(l.raw)
+		}
+		txt := decodeWith(raw.String(), fi.uni)
+		if txt == "" {
+			continue
+		}
+		// Tm is "a b c d e f": d scales the text, e and f place it.
+		scale := num(body[mt[8]:mt[9]])
+		if scale == 0 {
+			scale = 1
+		}
+		x, ty := num(body[mt[10]:mt[11]]), num(body[mt[12]:mt[13]])
+		ctm, ok := ctms[m[0]]
+		if !ok {
+			ctm = identity
+		}
+		pw.runs = append(pw.runs, &run{
+			st: m[0], en: m[1], font: fname,
+			sz: scale * num(body[mfi[4]:mfi[5]]), x: x, y: ctm.b*x + ctm.d*ty + ctm.f,
+			ca: ctm.a, ce: ctm.c*ty + ctm.e,
+			s: txt, nx: x,
+			enc: reverseUni(fi.uni),
+			xSt: m[2] + mt[10], xEn: m[2] + mt[11],
+			fSt: m[2] + mfi[2], fEn: m[2] + mfi[3],
+			lits: lits,
+		})
+	}
 }
 
 func linesOf(pw *pageWork) []string {
@@ -887,52 +1223,177 @@ func hasReadableText(lines []string) bool {
 	return false
 }
 
-// missingGlyphs lists the characters the transposed chords would need that
-// none of the embedded subsets can draw. A subset only carries the glyphs the
-// document already used, so a new key often needs a letter that is simply not
-// in the file.
-func missingGlyphs(maps []map[byte]string, lines []string, n int) []string {
-	have := map[rune]bool{}
-	for _, m := range maps {
-		for _, u := range m {
-			for _, r := range u {
-				have[r] = true
-			}
+// spliceRun rewrites one Quartz block in place: the new codes go into its
+// first string operand, the rest are emptied, and the Tm x is updated if the
+// run moved. The block's matrix and font are left exactly as they were.
+// fbFontName is the resource name used for the standard font a run falls
+// back to when its own subset cannot draw the new chord.
+func fbFontName(bold bool) string {
+	if bold {
+		return "CKCFallbackB"
+	}
+	return "CKCFallbackR"
+}
+
+// addFallbackFont puts a standard PDF font in the page's resources. The 14
+// standard fonts need no embedding - every viewer has them - and
+// Helvetica-Bold matches the Arial-Bold these charts use.
+func (d *PDF) addFallbackFont(pg Page, bold bool) bool {
+	name := fbFontName(bold)
+	base := "Helvetica"
+	if bold {
+		base = "Helvetica-Bold"
+	}
+	fv, _ := d.Resolve(pg.Res.Get("Font"))
+	fd, ok := fv.(*Dict)
+	if !ok {
+		return false
+	}
+	if _, done := fd.M[name]; done {
+		return true
+	}
+	nf := NewDict()
+	nf.Set("Type", Name("Font"))
+	nf.Set("Subtype", Name("Type1"))
+	nf.Set("BaseFont", Name(base))
+	nf.Set("Encoding", Name("WinAnsiEncoding"))
+
+	n := 0
+	for k := range d.xref {
+		if k > n {
+			n = k
 		}
 	}
-	if len(have) == 0 {
-		return nil
+	for k := range d.Modified {
+		if k > n {
+			n = k
+		}
 	}
-	miss := map[rune]bool{}
-	for _, l := range lines {
-		fields := strings.Fields(chordSep.Replace(l))
-		if len(fields) == 0 {
-			continue
-		}
-		chordLine := true
-		for _, f := range fields {
-			if !isChordText(f) {
-				chordLine = false
-				break
+	n++
+	d.Modified[n] = nf
+
+	ndf := fd.Clone()
+	ndf.Set(name, Ref{N: n})
+	if fr, isRef := pg.Res.Get("Font").(Ref); isRef {
+		d.Modified[fr.N] = ndf
+		return true
+	}
+	if rr, isRef := pg.D.Get("Resources").(Ref); isRef {
+		nres := pg.Res.Clone()
+		nres.Set("Font", ndf)
+		d.Modified[rr.N] = nres
+		return true
+	}
+	return false
+}
+
+// transposeWord transposes one whole word. A "Key: G" heading is not chord
+// text, but the note in it still has to move with the song.
+func transposeWord(s string, n int) string {
+	if isChordText(s) {
+		return transposeText(s, n)
+	}
+	if m := reKey.FindStringSubmatchIndex(s); m != nil {
+		return s[:m[2]] + transposeText(s[m[2]:m[3]], n) + s[m[3]:]
+	}
+	return s
+}
+
+// quartzTranspose decides the new text for Quartz runs. Quartz breaks text at
+// arbitrary points - "Chorus" arrives as "C" then "horus" - so a block is only
+// a chord when the whole word around it is one, or the lone "C" gets
+// transposed into an "F". Touching blocks are joined, the word is transposed
+// as a unit, and the result goes into the first block with the rest emptied.
+func (pw *pageWork) quartzTranspose(n int) {
+	by := map[int][]*run{}
+	for _, r := range pw.runs {
+		by[r.line] = append(by[r.line], r)
+	}
+	for _, rs := range by {
+		sort.Slice(rs, func(i, j int) bool { return rs[i].px() < rs[j].px() })
+		for i := 0; i < len(rs); {
+			var sb strings.Builder
+			sb.WriteString(rs[i].s)
+			j := i + 1
+			for j < len(rs) {
+				prev, cur := rs[j-1], rs[j]
+				if strings.TrimSpace(prev.s) == "" || strings.TrimSpace(cur.s) == "" {
+					break
+				}
+				k := prev.scale()
+				sw := pw.wd(prev, " ") * k
+				if sw <= 0 {
+					sw = prev.sz * 0.25 * k
+				}
+				if cur.px()-(prev.px()+pw.wd(prev, prev.s)*k) > 0.35*sw {
+					break
+				}
+				// Only blocks set the same way are parts of one word: a
+				// superscript "7" has its own font, size and baseline and is
+				// an extension, not part of the root. A raised sharp or flat
+				// is the exception - it is part of the chord, and leaving it
+				// out transposes the wrong note ("D/F#" read as "D/F").
+				if cur.font != prev.font || math.Abs(cur.sz-prev.sz) > 0.01 ||
+					math.Abs(cur.y-prev.y) > 0.5 {
+					if t := strings.TrimSpace(cur.s); (t != "#" && t != "b") || !isChordText(sb.String()) {
+						break
+					}
+				}
+				sb.WriteString(cur.s)
+				j++
 			}
-		}
-		if !chordLine {
-			continue
-		}
-		for _, r := range transposeText(l, n) {
-			if r == ' ' || !have[r] {
-				if r != ' ' {
-					miss[r] = true
+			word := sb.String()
+			if nw := transposeWord(word, n); nw != word {
+				// The whole word is written into its first block. That block
+				// now stands for the word, so it carries the old text too -
+				// otherwise the width comparison that spaces the line would
+				// weigh a whole chord against one fragment of it.
+				rs[i].s, rs[i].nw = word, nw
+				for _, r := range rs[i+1 : j] {
+					r.nw, r.blank = "", true
+				}
+			} else {
+				for _, r := range rs[i:j] {
+					r.nw = r.s
 				}
 			}
+			i = j
 		}
 	}
-	var out []string
-	for r := range miss {
-		out = append(out, strconv.Quote(string(r)))
+}
+
+func spliceRun(c string, r *run, nb string) string {
+	type ed struct {
+		st, en int
+		s      string
 	}
-	sort.Strings(out)
-	return out
+	var eds []ed
+	if math.Abs(r.nx-r.x) > 1e-6 {
+		eds = append(eds, ed{r.xSt, r.xEn, strconv.FormatFloat(r.nx, 'f', 2, 64)})
+	}
+	if r.fb {
+		eds = append(eds, ed{r.fSt, r.fEn, fbFontName(r.fbBold)})
+	}
+	for i, l := range r.lits {
+		s := ""
+		if i == 0 {
+			s = "(" + escapePDF(nb) + ")"
+		}
+		eds = append(eds, ed{l.st, l.en, s})
+	}
+	sort.Slice(eds, func(i, j int) bool { return eds[i].st < eds[j].st })
+	var sb strings.Builder
+	pos := r.st
+	for _, e := range eds {
+		if e.st < pos {
+			continue
+		}
+		sb.WriteString(c[pos:e.st])
+		sb.WriteString(e.s)
+		pos = e.en
+	}
+	sb.WriteString(c[pos:r.en])
+	return sb.String()
 }
 
 func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
@@ -949,7 +1410,6 @@ func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 	// say what is wrong instead.
 	runs := 0
 	var readable []string
-	var haveGlyphs []map[byte]string
 	for _, pg := range pages {
 		pw, err := d.loadPage(pg)
 		if err != nil {
@@ -957,24 +1417,18 @@ func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 		}
 		runs += len(pw.runs)
 		readable = append(readable, textLines(pw)...)
-		for _, fi := range pw.fonts {
-			if fi.uni != nil {
-				haveGlyphs = append(haveGlyphs, fi.uni)
-			}
-		}
 	}
 	if runs == 0 {
 		if !hasReadableText(readable) {
-			return nil, 0, nil, errors.New("no text found to convert in this PDF \u2014 it is probably a scan")
+			return nil, 0, nil, errors.New("no text found to convert in this PDF — it is probably a scan")
 		}
-		msg := "this PDF's text cannot be rewritten \u2014 it was produced by a Mac app (Quartz PDFContext), " +
-			"which stores every run in its own re-encoded font subset"
-		if miss := missingGlyphs(haveGlyphs, readable, n); len(miss) > 0 {
-			msg += ", and the embedded fonts have no " + strings.Join(miss, ", ")
-		}
-		return nil, 0, nil, errors.New(msg + ". Convert the .docx version instead")
+		return nil, 0, nil, errors.New("this PDF's text is laid out in a way this app cannot rewrite. Convert the .docx version instead")
 	}
 
+	// Characters the transposed chords need that an embedded subset cannot
+	// draw. A subset carries only the glyphs the document already used, and
+	// one missing letter is enough to spoil the chart, so this is fatal.
+	cannot := map[rune]bool{}
 	count := 0
 	warn := map[string]bool{}
 	for _, pg := range pages {
@@ -982,30 +1436,56 @@ func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 		if err != nil {
 			return nil, 0, nil, err
 		}
+		quartz := len(pw.runs) > 0 && pw.runs[0].enc != nil
+		if quartz {
+			pw.quartzTranspose(n)
+		} else {
+			for _, r := range pw.runs {
+				r.nw = transposeText(r.s, n)
+			}
+		}
 		for _, r := range pw.runs {
-			r.nw = transposeText(r.s, n)
+			if r.enc == nil || r.nw == r.s {
+				continue
+			}
+			// A subset carries only the glyphs the document already used, so a
+			// new key often needs a letter that is not in the file. Those runs
+			// are written in a standard font instead.
+			if _, miss := encodeRun(r.nw, r.enc); len(miss) > 0 {
+				r.fb = true
+				if fi := pw.fonts[r.font]; fi != nil {
+					r.fbBold = fi.bold
+				}
+			}
 		}
 		// push following text right when a chord got wider
 		by := map[int][]*run{}
 		for _, r := range pw.runs {
+			if r.blank {
+				continue // no longer drawn; its word is measured at its first block
+			}
 			by[r.line] = append(by[r.line], r)
 		}
 		for _, rs := range by {
-			sort.Slice(rs, func(i, j int) bool { return rs[i].x < rs[j].x })
+			// Measured in page points: runs placed by different transforms
+			// share no text space. For an ordinary run the scale is 1 and the
+			// offset 0, so this is exactly the arithmetic it always did.
+			sort.Slice(rs, func(i, j int) bool { return rs[i].px() < rs[j].px() })
 			shift := 0.0
 			for i, r := range rs {
-				r.nx = r.x + shift
+				k := r.scale()
+				r.nx = r.x + shift/k
 				if i+1 >= len(rs) {
 					continue
 				}
 				nxt := rs[i+1]
-				oend := r.x + pw.wd(r, r.s)
-				nend := r.nx + pw.wd(r, r.nw)
-				if math.Abs(nxt.x-oend) < 1.5 {
+				oend := r.px() + pw.wd(r, r.s)*k
+				nend := r.px() + shift + pw.wd(r, r.nw)*k
+				if math.Abs(nxt.px()-oend) < 1.5 {
 					shift = nend - oend
 				} else {
-					gap := math.Max(nxt.x-oend, 0)
-					shift = math.Max(0, nend+math.Min(gap, 5.5)-nxt.x)
+					gap := math.Max(nxt.px()-oend, 0)
+					shift = math.Max(0, nend+math.Min(gap, 5.5)-nxt.px())
 				}
 			}
 		}
@@ -1018,17 +1498,43 @@ func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 			if r.nw == r.s && math.Abs(r.nx-r.x) < 1e-6 {
 				continue
 			}
-			orig := c[r.st:r.en]
-			loc := reTm.FindStringIndex(orig)
-			t := orig[:loc[0]] + fmt.Sprintf("1 0 0 1 %.2f ", r.nx) + orig[loc[1]:]
-			tl := reTJ.FindStringIndex(t)
-			t = t[:tl[0]] + "[(" + escapePDF(r.nw) + ")] TJ" + t[tl[1]:]
+			var t string
+			if r.enc != nil {
+				nb := r.nw
+				if !r.fb {
+					var miss []rune
+					nb, miss = encodeRun(r.nw, r.enc)
+					if len(miss) > 0 {
+						for _, ch := range miss {
+							cannot[ch] = true
+						}
+						continue
+					}
+				} else if !d.addFallbackFont(pg, r.fbBold) {
+					for _, ch := range r.nw {
+						cannot[ch] = true
+					}
+					continue
+				}
+				t = spliceRun(c, r, nb)
+			} else {
+				orig := c[r.st:r.en]
+				loc := reTm.FindStringIndex(orig)
+				t = orig[:loc[0]] + fmt.Sprintf("1 0 0 1 %.2f ", r.nx) + orig[loc[1]:]
+				tl := reTJ.FindStringIndex(t)
+				t = t[:tl[0]] + "[(" + escapePDF(r.nw) + ")] TJ" + t[tl[1]:]
+			}
 			sb.WriteString(c[pos:r.st])
 			sb.WriteString(t)
 			pos = r.en
 			changed = true
 			if r.nw != r.s {
-				count++
+				if r.nw != "" {
+					count++
+				}
+				if r.enc != nil {
+					continue // a subset's own codes already have widths
+				}
 				if used[r.font] == nil {
 					used[r.font] = map[byte]bool{}
 				}
@@ -1092,6 +1598,17 @@ func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 				fi.d = nd
 			}
 		}
+	}
+	if len(cannot) > 0 {
+		var chars []string
+		for r := range cannot {
+			chars = append(chars, strconv.Quote(string(r)))
+		}
+		sort.Strings(chars)
+		return nil, 0, nil, fmt.Errorf(
+			"this key needs %s, which the chart's embedded font does not contain "+
+				"(it carries only the characters the document already used). "+
+				"Convert the .docx version instead", strings.Join(chars, ", "))
 	}
 	out, err := d.Save()
 	if err != nil {
