@@ -72,28 +72,193 @@ type KeyInfo struct {
 }
 
 func keyFromLines(lines []string, fname string) (KeyInfo, error) {
+	// The whole song is consulted either way: as the answer when nothing
+	// states the key, and as a cross-check when something does.
+	guess, haveGuess := keyFromChords(lines)
+
+	note := func(src, k string) string {
+		if haveGuess && guess.Key != k {
+			return src + " (the chords look more like " + guess.Key + ")"
+		}
+		return src
+	}
+
 	for _, l := range lines {
 		if m := reKey.FindStringSubmatch(l); m != nil {
-			return KeyInfo{normKey(m[1]), "from the \"Key:\" line"}, nil
+			k := normKey(m[1])
+			return KeyInfo{k, note(`the "Key:" line`, k)}, nil
 		}
 	}
 	if m := reKeyName.FindStringSubmatch(filepath.Base(fname)); m != nil {
-		return KeyInfo{normKey(m[1]), "from the file name"}, nil
+		k := normKey(m[1])
+		return KeyInfo{k, note("the file name", k)}, nil
 	}
+	if haveGuess {
+		return guess, nil
+	}
+	return KeyInfo{}, errors.New("could not find the key in this file")
+}
+
+// ---------- key from the song's chords ----------
+
+// chord quality, as far as key-fitting cares
+const (
+	qMaj = 0
+	qMin = 1
+	qDim = 2
+)
+
+type chordTok struct{ root, qual int }
+
+// Scale degrees and the triad quality built on each, as semitone offsets
+// from the tonic.
+var (
+	degMaj  = [7]int{0, 2, 4, 5, 7, 9, 11}
+	qualMaj = [7]int{qMaj, qMin, qMin, qMaj, qMaj, qMin, qDim}
+	degMin  = [7]int{0, 2, 3, 5, 7, 8, 10}
+	qualMin = [7]int{qMin, qDim, qMaj, qMin, qMin, qMaj, qMaj}
+)
+
+// parseChord reads a chord symbol, ignoring any slash bass.
+func parseChord(s string) (chordTok, bool) {
+	t := noteAt(s, 0)
+	if t == "" {
+		return chordTok{}, false
+	}
+	r, ok := IDX[t]
+	if !ok {
+		return chordTok{}, false
+	}
+	rest := s[len(t):]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		rest = rest[:i]
+	}
+	q := qMaj
+	switch {
+	case strings.HasPrefix(rest, "dim"):
+		q = qDim
+	case strings.HasPrefix(rest, "m") && !strings.HasPrefix(rest, "maj"):
+		q = qMin
+	}
+	return chordTok{r, q}, true
+}
+
+var chordSep = strings.NewReplacer("|", " ", ":", " ", "(", " ", ")", " ")
+
+// chordsIn collects the song's chords in reading order. Lines made up
+// entirely of chords are preferred, since that is how these charts are laid
+// out and it keeps lyrics like "Dad" out of the tally; if too few turn up,
+// every chord-shaped token is taken instead.
+func chordsIn(lines []string) []chordTok {
+	var strict, loose []chordTok
 	for _, l := range lines {
-		for _, f := range strings.Fields(strings.NewReplacer("|", " ", ":", " ", "(", " ", ")", " ").Replace(l)) {
+		fields := strings.Fields(chordSep.Replace(l))
+		if len(fields) == 0 {
+			continue
+		}
+		var line []chordTok
+		all := true
+		for _, f := range fields {
+			c, ok := chordTok{}, false
 			if isChordText(f) {
-				if t := noteAt(f, 0); t != "" {
-					k := t
-					if strings.HasPrefix(f[len(t):], "m") && !strings.HasPrefix(f[len(t):], "maj") {
-						k += "m"
-					}
-					return KeyInfo{normKey(k), "guessed from the first chord — please check"}, nil
-				}
+				c, ok = parseChord(f)
+			}
+			if !ok {
+				all = false
+				continue
+			}
+			line = append(line, c)
+		}
+		loose = append(loose, line...)
+		if all {
+			strict = append(strict, line...)
+		}
+	}
+	if len(strict) >= 3 {
+		return strict
+	}
+	return loose
+}
+
+// scoreKey rates how well the chords fit one key. Diatonic chords score,
+// chromatic ones cost, and the opening and closing chords count for more
+// because songs tend to begin and end on the tonic.
+func scoreKey(toks []chordTok, root int, minor bool) int {
+	deg, qual := degMaj, qualMaj
+	tonicQual := qMaj
+	if minor {
+		deg, qual = degMin, qualMin
+		tonicQual = qMin
+	}
+	total := 0
+	for i, c := range toks {
+		w := 1
+		switch i {
+		case 0:
+			w = 2
+		case len(toks) - 1:
+			w = 4
+		}
+		rel := ((c.root-root)%12 + 12) % 12
+		hit := -1
+		for d := 0; d < 7; d++ {
+			if deg[d] == rel {
+				hit = d
+				break
+			}
+		}
+		switch {
+		case hit < 0:
+			total -= 2 * w
+		case qual[hit] == c.qual:
+			total += 3 * w
+		case minor && rel == 7 && c.qual == qMaj:
+			total += 3 * w // harmonic-minor V, very common
+		default:
+			total += w // right root, unexpected quality
+		}
+	}
+	last, first := toks[len(toks)-1], toks[0]
+	if last.root == root && last.qual == tonicQual {
+		total += 8
+	}
+	if first.root == root && first.qual == tonicQual {
+		total += 4
+	}
+	return total
+}
+
+// keyFromChords picks the key the song's chords fit best. A relative
+// major/minor pair shares every diatonic chord, so the tonic bonuses in
+// scoreKey are usually what separates them; when they do not, the result
+// says to check it.
+func keyFromChords(lines []string) (KeyInfo, bool) {
+	toks := chordsIn(lines)
+	if len(toks) < 3 {
+		return KeyInfo{}, false
+	}
+	best, second := math.MinInt, math.MinInt
+	bestRoot, bestMinor := 0, false
+	for r := 0; r < 12; r++ {
+		for _, m := range []bool{false, true} {
+			switch sv := scoreKey(toks, r, m); {
+			case sv > best:
+				second = best
+				best, bestRoot, bestMinor = sv, r, m
+			case sv > second:
+				second = sv
 			}
 		}
 	}
-	return KeyInfo{}, errors.New("could not find the key in this file")
+	k := NAMES[bestRoot]
+	if bestMinor {
+		k += "m"
+	}
+	src := "the chords in the song"
+	if best-second < 6 {
+		src += " — please check"
+	}
+	return KeyInfo{k, src}, true
 }
 
 func normKey(k string) string {
@@ -452,7 +617,27 @@ func DetectPDF(src []byte, fname string) (KeyInfo, error) {
 		}
 		lines = append(lines, linesOf(pw)...)
 	}
-	return keyFromLines(lines, fname)
+	ki, err := keyFromLines(lines, fname)
+	if err != nil && !hasReadableText(lines) {
+		return KeyInfo{}, errors.New("no readable text in this PDF — it stores its text as embedded font glyphs (common from Mac apps) or is a scan")
+	}
+	return ki, err
+}
+
+// hasReadableText reports whether the extracted text looks like letters at
+// all, as opposed to the glyph codes a CID-keyed font leaves behind.
+func hasReadableText(lines []string) bool {
+	n := 0
+	for _, l := range lines {
+		for i := 0; i < len(l); i++ {
+			if c := l[i]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				if n++; n >= 20 {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
