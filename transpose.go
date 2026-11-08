@@ -74,10 +74,13 @@ type KeyInfo struct {
 func keyFromLines(lines []string, fname string) (KeyInfo, error) {
 	// The whole song is consulted either way: as the answer when nothing
 	// states the key, and as a cross-check when something does.
-	guess, haveGuess := keyFromChords(lines)
+	guess, margin, haveGuess := keyFromChords(lines)
 
+	// Only contradict a stated key when the chords say so clearly. A relative
+	// major/minor pair shares every diatonic chord, so a thin margin there is
+	// not evidence of anything.
 	note := func(src, k string) string {
-		if haveGuess && guess.Key != k {
+		if haveGuess && guess.Key != k && margin >= 10 {
 			return src + " (the chords look more like " + guess.Key + ")"
 		}
 		return src
@@ -157,20 +160,22 @@ func chordsIn(lines []string) []chordTok {
 			continue
 		}
 		var line []chordTok
-		all := true
 		for _, f := range fields {
-			c, ok := chordTok{}, false
-			if isChordText(f) {
-				c, ok = parseChord(f)
-			}
-			if !ok {
-				all = false
+			if !isChordText(f) {
 				continue
 			}
-			line = append(line, c)
+			if c, ok := parseChord(f); ok {
+				line = append(line, c)
+			}
 		}
 		loose = append(loose, line...)
-		if all {
+		// A chord line is mostly chords. Section labels ("Intro:") and
+		// performance marks ("(4n)") sit among them without making the line
+		// anything else, so a couple of strays are tolerated; a lyric line
+		// never clears the bar.
+		// A lone chord on its own line is usually the song's last one, which
+		// is the most telling of all, so the bar is the ratio, not a count.
+		if len(line) > 0 && len(line)*10 >= len(fields)*6 {
 			strict = append(strict, line...)
 		}
 	}
@@ -225,6 +230,14 @@ func scoreKey(toks []chordTok, root int, minor bool) int {
 	if first.root == root && first.qual == tonicQual {
 		total += 4
 	}
+	// Charts are often laid out in columns, so reading order - and with it
+	// the "last chord" - is not always the order the song is played in.
+	// How much the tonic is used does not depend on that order.
+	for _, c := range toks {
+		if c.root == root && c.qual == tonicQual {
+			total += 2
+		}
+	}
 	return total
 }
 
@@ -232,10 +245,10 @@ func scoreKey(toks []chordTok, root int, minor bool) int {
 // major/minor pair shares every diatonic chord, so the tonic bonuses in
 // scoreKey are usually what separates them; when they do not, the result
 // says to check it.
-func keyFromChords(lines []string) (KeyInfo, bool) {
+func keyFromChords(lines []string) (KeyInfo, int, bool) {
 	toks := chordsIn(lines)
 	if len(toks) < 3 {
-		return KeyInfo{}, false
+		return KeyInfo{}, 0, false
 	}
 	best, second := math.MinInt, math.MinInt
 	bestRoot, bestMinor := 0, false
@@ -258,7 +271,7 @@ func keyFromChords(lines []string) (KeyInfo, bool) {
 	if best-second < 6 {
 		src += " — please check"
 	}
-	return KeyInfo{k, src}, true
+	return KeyInfo{k, src}, best - second, true
 }
 
 func normKey(k string) string {
@@ -376,6 +389,7 @@ type fontInfo struct {
 	first  int
 	widths []int
 	bold   bool
+	uni    map[byte]string // /ToUnicode: character code -> real text
 }
 
 type run struct {
@@ -519,6 +533,7 @@ func (d *PDF) loadPage(pg Page) (*pageWork, error) {
 						fi.widths = append(fi.widths, int(math.Round(floatOf(xv))))
 					}
 				}
+				fi.uni = toUnicode(d, f)
 				pw.fonts[k] = fi
 			}
 		}
@@ -578,6 +593,232 @@ func (pw *pageWork) wd(r *run, s string) float64 {
 	return float64(t) * r.sz / 1000
 }
 
+// ---------- /ToUnicode ----------
+//
+// Quartz (macOS) re-encodes each embedded subset so its character codes run
+// from 33 upwards in the order the glyphs were first used, which has nothing
+// to do with ASCII. The real text is only recoverable through the font's
+// /ToUnicode CMap.
+
+var reBfChar = regexp.MustCompile(`(?s)beginbfchar(.*?)endbfchar`)
+var reBfRange = regexp.MustCompile(`(?s)beginbfrange(.*?)endbfrange`)
+var reCMapHex = regexp.MustCompile(`<([0-9A-Fa-f]+)>`)
+
+// utf16BEString decodes the UTF-16BE hex a CMap uses for its destinations.
+func utf16BEString(h string) string {
+	var sb strings.Builder
+	for i := 0; i+4 <= len(h); i += 4 {
+		v, err := strconv.ParseUint(h[i:i+4], 16, 32)
+		if err != nil {
+			break
+		}
+		sb.WriteRune(rune(v))
+	}
+	return sb.String()
+}
+
+// toUnicode reads a simple font's /ToUnicode CMap. Only single-byte codes are
+// kept, which is what a simple font uses.
+func toUnicode(d *PDF, f *Dict) map[byte]string {
+	v, err := d.Resolve(f.Get("ToUnicode"))
+	if err != nil {
+		return nil
+	}
+	st, ok := v.(*Stream)
+	if !ok {
+		return nil
+	}
+	b, err := d.Decode(st)
+	if err != nil {
+		return nil
+	}
+	cm := string(b)
+	m := map[byte]string{}
+	for _, blk := range reBfChar.FindAllStringSubmatch(cm, -1) {
+		h := reCMapHex.FindAllStringSubmatch(blk[1], -1)
+		for i := 0; i+1 < len(h); i += 2 {
+			c, err := strconv.ParseUint(h[i][1], 16, 32)
+			if err != nil || c > 0xff {
+				continue
+			}
+			m[byte(c)] = utf16BEString(h[i+1][1])
+		}
+	}
+	for _, blk := range reBfRange.FindAllStringSubmatch(cm, -1) {
+		h := reCMapHex.FindAllStringSubmatch(blk[1], -1)
+		for i := 0; i+2 < len(h); i += 3 {
+			lo, e1 := strconv.ParseUint(h[i][1], 16, 32)
+			hi, e2 := strconv.ParseUint(h[i+1][1], 16, 32)
+			dst := h[i+2][1]
+			if e1 != nil || e2 != nil || lo > 0xff || hi > 0xff || hi < lo {
+				continue
+			}
+			base := []rune(utf16BEString(dst))
+			if len(base) == 0 {
+				continue
+			}
+			for c := lo; c <= hi; c++ {
+				r := append([]rune(nil), base...)
+				r[len(r)-1] += rune(c - lo)
+				m[byte(c)] = string(r)
+			}
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
+}
+
+// ---------- general text extraction (detection only) ----------
+//
+// reBlk only matches the one shape Word emits. Quartz writes the text matrix
+// before the font, folds the point size into that matrix and wraps each run
+// in its own cm, so nothing matches and no runs come out. This reads both
+// shapes, decodes through /ToUnicode, and is used only to read a chart - the
+// rewriting path still works from pw.runs and is untouched.
+
+var reBT = regexp.MustCompile(`(?s)BT\b(.*?)\bET\b`)
+var reNum6 = `(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+`
+var reTmAny = regexp.MustCompile(reNum6 + `Tm`)
+var reCmAny = regexp.MustCompile(reNum6 + `cm`)
+var reTfAny = regexp.MustCompile(`/([^\s/\[\]()<>]+)\s+(-?[\d.]+)\s+Tf`)
+
+type placedText struct {
+	x, y float64
+	s    string
+}
+
+// blockText pulls the text out of one BT..ET block. tjText only accepts the
+// "[...] TJ" array form because that is all the rewriting path needs; reading
+// a chart also has to cope with a bare "(...) Tj" and with hex strings, which
+// is how Quartz writes most of its runs.
+func blockText(body string) string {
+	var sb strings.Builder
+	for i := 0; i < len(body); i++ {
+		switch body[i] {
+		case '(':
+			depth, j := 1, i+1
+			for ; j < len(body) && depth > 0; j++ {
+				if body[j] == '\\' {
+					j++
+					continue
+				}
+				if body[j] == '(' {
+					depth++
+				} else if body[j] == ')' {
+					depth--
+				}
+			}
+			if end := j - 1; end > i {
+				sb.WriteString(unescapePDF(body[i+1 : end]))
+			}
+			i = j - 1
+		case '<':
+			if i+1 < len(body) && body[i+1] == '<' { // a dictionary, not a string
+				return sb.String()
+			}
+			j := strings.IndexByte(body[i:], '>')
+			if j < 0 {
+				return sb.String()
+			}
+			h := body[i+1 : i+j]
+			for k := 0; k+1 < len(h); k += 2 {
+				v, err := strconv.ParseUint(h[k:k+2], 16, 16)
+				if err != nil {
+					break
+				}
+				sb.WriteByte(byte(v))
+			}
+			i += j
+		}
+	}
+	return sb.String()
+}
+
+func num(s string) float64 { v, _ := strconv.ParseFloat(s, 64); return v }
+
+// textLines reads the page's text in reading order, whatever produced it.
+func textLines(pw *pageWork) []string {
+	c := string(pw.content)
+
+	// Quartz emits "q <cm> BT ... ET Q" per run, so the transform that places
+	// a block is the last cm before it.
+	type cmAt struct {
+		at         int
+		a, d, e, f float64
+	}
+	var cms []cmAt
+	for _, m := range reCmAny.FindAllStringSubmatch(c, -1) {
+		cms = append(cms, cmAt{0, num(m[1]), num(m[4]), num(m[5]), num(m[6])})
+	}
+	for i, m := range reCmAny.FindAllStringIndex(c, -1) {
+		cms[i].at = m[0]
+	}
+
+	var segs []placedText
+	for _, m := range reBT.FindAllStringSubmatchIndex(c, -1) {
+		body := c[m[2]:m[3]]
+		mt := reTmAny.FindStringSubmatch(body)
+		mf := reTfAny.FindStringSubmatch(body)
+		if mt == nil || mf == nil {
+			continue
+		}
+		raw := blockText(body)
+		if raw == "" {
+			continue
+		}
+		txt := raw
+		if fi := pw.fonts[mf[1]]; fi != nil && fi.uni != nil {
+			var sb strings.Builder
+			for i := 0; i < len(raw); i++ {
+				if u, ok := fi.uni[raw[i]]; ok {
+					sb.WriteString(u)
+				} else {
+					sb.WriteByte(raw[i])
+				}
+			}
+			txt = sb.String()
+		}
+		a, dd, e, f := 1.0, 1.0, 0.0, 0.0
+		for _, cm := range cms {
+			if cm.at > m[0] {
+				break
+			}
+			a, dd, e, f = cm.a, cm.d, cm.e, cm.f
+		}
+		segs = append(segs, placedText{a*num(mt[5]) + e, dd*num(mt[6]) + f, txt})
+	}
+	if len(segs) == 0 {
+		return nil
+	}
+	sort.SliceStable(segs, func(i, j int) bool { return segs[i].y > segs[j].y })
+	var out []string
+	var cur []placedText
+	prev := math.Inf(1)
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		sort.SliceStable(cur, func(i, j int) bool { return cur[i].x < cur[j].x })
+		var sb strings.Builder
+		for _, s := range cur {
+			sb.WriteString(s.s)
+		}
+		out = append(out, sb.String())
+		cur = nil
+	}
+	for _, s := range segs {
+		if prev-s.y > 8 {
+			flush()
+		}
+		prev = s.y
+		cur = append(cur, s)
+	}
+	flush()
+	return out
+}
+
 func linesOf(pw *pageWork) []string {
 	by := map[int][]*run{}
 	maxL := -1
@@ -609,17 +850,23 @@ func DetectPDF(src []byte, fname string) (KeyInfo, error) {
 	if err != nil || len(pages) == 0 {
 		return KeyInfo{}, errors.New("could not read pages in this PDF")
 	}
-	var lines []string
+	var lines, general []string
 	for _, pg := range pages {
 		pw, err := d.loadPage(pg)
 		if err != nil {
 			return KeyInfo{}, err
 		}
 		lines = append(lines, linesOf(pw)...)
+		general = append(general, textLines(pw)...)
+	}
+	// Word-shaped content reads straight off pw.runs; anything else (Quartz,
+	// for one) only comes out through the general extractor.
+	if !hasReadableText(lines) {
+		lines = general
 	}
 	ki, err := keyFromLines(lines, fname)
 	if err != nil && !hasReadableText(lines) {
-		return KeyInfo{}, errors.New("no readable text in this PDF — it stores its text as embedded font glyphs (common from Mac apps) or is a scan")
+		return KeyInfo{}, errors.New("no readable text in this PDF — it is probably a scan")
 	}
 	return ki, err
 }
@@ -640,6 +887,54 @@ func hasReadableText(lines []string) bool {
 	return false
 }
 
+// missingGlyphs lists the characters the transposed chords would need that
+// none of the embedded subsets can draw. A subset only carries the glyphs the
+// document already used, so a new key often needs a letter that is simply not
+// in the file.
+func missingGlyphs(maps []map[byte]string, lines []string, n int) []string {
+	have := map[rune]bool{}
+	for _, m := range maps {
+		for _, u := range m {
+			for _, r := range u {
+				have[r] = true
+			}
+		}
+	}
+	if len(have) == 0 {
+		return nil
+	}
+	miss := map[rune]bool{}
+	for _, l := range lines {
+		fields := strings.Fields(chordSep.Replace(l))
+		if len(fields) == 0 {
+			continue
+		}
+		chordLine := true
+		for _, f := range fields {
+			if !isChordText(f) {
+				chordLine = false
+				break
+			}
+		}
+		if !chordLine {
+			continue
+		}
+		for _, r := range transposeText(l, n) {
+			if r == ' ' || !have[r] {
+				if r != ' ' {
+					miss[r] = true
+				}
+			}
+		}
+	}
+	var out []string
+	for r := range miss {
+		out = append(out, strconv.Quote(string(r)))
+	}
+	sort.Strings(out)
+	return out
+}
+
 func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 	d, err := OpenPDF(src)
 	if err != nil {
@@ -649,6 +944,37 @@ func ConvertPDF(src []byte, n int) ([]byte, int, []string, error) {
 	if err != nil {
 		return nil, 0, nil, err
 	}
+	// Rewriting works from pw.runs. When a PDF yields none of those but does
+	// contain text, converting it would quietly produce an identical file, so
+	// say what is wrong instead.
+	runs := 0
+	var readable []string
+	var haveGlyphs []map[byte]string
+	for _, pg := range pages {
+		pw, err := d.loadPage(pg)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		runs += len(pw.runs)
+		readable = append(readable, textLines(pw)...)
+		for _, fi := range pw.fonts {
+			if fi.uni != nil {
+				haveGlyphs = append(haveGlyphs, fi.uni)
+			}
+		}
+	}
+	if runs == 0 {
+		if !hasReadableText(readable) {
+			return nil, 0, nil, errors.New("no text found to convert in this PDF \u2014 it is probably a scan")
+		}
+		msg := "this PDF's text cannot be rewritten \u2014 it was produced by a Mac app (Quartz PDFContext), " +
+			"which stores every run in its own re-encoded font subset"
+		if miss := missingGlyphs(haveGlyphs, readable, n); len(miss) > 0 {
+			msg += ", and the embedded fonts have no " + strings.Join(miss, ", ")
+		}
+		return nil, 0, nil, errors.New(msg + ". Convert the .docx version instead")
+	}
+
 	count := 0
 	warn := map[string]bool{}
 	for _, pg := range pages {

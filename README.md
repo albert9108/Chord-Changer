@@ -22,6 +22,15 @@ Download the latest `Chord Key Changer.exe` from **[Releases](../../releases)**.
 - PDF: rewrites chord text, nudges following chords right if a chord gets wider (C→Bb), and fills in missing glyph widths (`b`, `#`) in the font's width table so nothing overlaps.
 - If the chord font is an embedded subset missing a symbol, the app warns — convert the .docx instead.
 
+## PDFs from Mac apps
+PDFs written by macOS (`Quartz PDFContext` — Pages, Preview, Print to PDF) store each
+run in its own re-encoded font subset, so the character codes are not ASCII and the real
+text only exists in the font's `/ToUnicode` map. The app reads those now, so the key and
+the chords are detected normally. **Converting them is not possible**: a subset only
+carries the glyphs the document already used, so the letters a new key needs (often `B`,
+`b` or `#`) have no outline in the file. The app says which ones are missing and points
+you at the `.docx`.
+
 ## Build
 Pure Go standard library, no dependencies.
 
