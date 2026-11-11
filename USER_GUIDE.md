@@ -1,6 +1,6 @@
 # Chord Key Changer — User Guide
 
-**Version:** v1.3.0 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
+**Version:** v1.3.1 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
 
 Two tabs:
 
@@ -100,7 +100,7 @@ C   C#   D   D#   E   F   F#   G   G#   A   Bb   B
    - drag image files onto the window, or **Add images…**, or
    - take a screenshot with **Win+Shift+S** and click **Paste image**.
 4. Paste your **Claude API key** in the API key box (once — it is remembered).
-5. Click **Read with AI** (10–40 seconds). The chart text appears in the box.
+5. Click **Read with AI** (usually under a minute). The chart text appears in the box.
 6. Check the chord positions and fix anything by typing. **Ctrl+Z** brings back the text from before.
 7. **Create Word…** → save. The name is filled in, e.g. `G Key - 海屿你.docx`.
 
@@ -145,6 +145,7 @@ Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a hel
 
 | Version | Date | Changes |
 |---|---|---|
+| v1.3.1 | 2026-11-11 | Fix "AI returned no chart": leave room for Sonnet 5.5's built-in thinking; clearer AI error messages; key-change choruses written as their own section |
 | v1.3.0 (build-6) | 2026-11-11 | **Make Chart** tab: chart text → Word chart in the house layout; Read with AI from chord screenshots (files, drag-drop or clipboard) |
 | v1.0.0 | 2026-11-08 | First release: PDF + DOCX, key detection, Open/Save dialogs, Bb-only-flat spelling |
 

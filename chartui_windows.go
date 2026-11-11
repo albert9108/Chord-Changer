@@ -233,7 +233,7 @@ func onReadAI() {
 	imgs := append([]aiImage(nil), chartImgs...)
 	model := settings.Model
 	aiBusy = true
-	status = "Reading the screenshots with AI… (about 10–40 seconds)"
+	status = "Reading the screenshots with AI… (usually under a minute)"
 	focus = itemNone
 	repaint()
 	go func() {

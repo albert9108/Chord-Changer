@@ -17,10 +17,14 @@ import (
 	"time"
 )
 
+var aiEndpoint = "https://api.anthropic.com/v1/messages"
+
 const (
-	aiURL          = "https://api.anthropic.com/v1/messages"
 	aiDefaultModel = "claude-sonnet-5-5"
 	aiMaxImage     = 5 << 20 // API limit per image
+	// Sonnet 5.5 thinks by default and thinking counts toward max_tokens,
+	// so leave plenty of room for the chart after the thinking.
+	aiMaxTokens = 32000
 )
 
 const aiSystem = `You turn worship-song chord sources into a chord chart in one exact text format.
@@ -49,7 +53,8 @@ RULES
 8. Keep lyric lines short: at most 13 Chinese characters per line (Latin letters count half). Split long phrases at natural pauses. Use one space between phrases on the same line.
 9. Put "===" on its own line before the section that should start the second column, choosing it so the two columns are roughly equal in length.
 10. Use the lyrics the user typed as the lyric source when given (convert to Simplified); otherwise read them from the screenshots.
-11. If something is missing (e.g. a section has no chords in any screenshot), still write the lyrics and add a line in round brackets such as (此段截图没有 chord，请补上).`
+11. If something is missing (e.g. a section has no chords in any screenshot), still write the lyrics and add a line in round brackets such as (此段截图没有 chord，请补上).
+12. If a section repeats with different chords (for example the last chorus moves up a key), write it again as its own section, e.g. "## Chorus 2 (Key D)", with the chords exactly as shown.`
 
 type aiImage struct {
 	MediaType string
@@ -115,11 +120,11 @@ func ReadChartWithAI(apiKey, model, lyrics string, imgs []aiImage) (string, erro
 
 	reqBody, _ := json.Marshal(map[string]any{
 		"model":      model,
-		"max_tokens": 4000,
+		"max_tokens": aiMaxTokens,
 		"system":     aiSystem,
 		"messages":   []map[string]any{{"role": "user", "content": content}},
 	})
-	req, err := http.NewRequest("POST", aiURL, bytes.NewReader(reqBody))
+	req, err := http.NewRequest("POST", aiEndpoint, bytes.NewReader(reqBody))
 	if err != nil {
 		return "", err
 	}
@@ -127,7 +132,7 @@ func ReadChartWithAI(apiKey, model, lyrics string, imgs []aiImage) (string, erro
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("content-type", "application/json")
 
-	resp, err := (&http.Client{Timeout: 3 * time.Minute}).Do(req)
+	resp, err := (&http.Client{Timeout: 6 * time.Minute}).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("could not reach the Claude API: %v", err)
 	}
@@ -135,7 +140,8 @@ func ReadChartWithAI(apiKey, model, lyrics string, imgs []aiImage) (string, erro
 	raw, _ := io.ReadAll(resp.Body)
 
 	var out struct {
-		Content []struct {
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
@@ -165,7 +171,13 @@ func ReadChartWithAI(apiKey, model, lyrics string, imgs []aiImage) (string, erro
 	text = strings.TrimSuffix(text, "```")
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return "", errors.New("the AI returned no chart — try clearer screenshots")
+		switch out.StopReason {
+		case "max_tokens":
+			return "", errors.New("the AI ran out of room before writing the chart — try fewer screenshots at a time")
+		case "refusal":
+			return "", errors.New("the AI declined this request — try again, or crop the screenshots to just the chords and lyrics")
+		}
+		return "", fmt.Errorf("the AI returned no chart (stop reason: %q) — try again", out.StopReason)
 	}
 	return text, nil
 }

@@ -3,8 +3,11 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"image/png"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -131,5 +134,37 @@ func TestDibToPNG(t *testing.T) {
 	}
 	if _, _, bl, _ := img.At(1, 0).RGBA(); bl>>8 != 255 {
 		t.Fatal("second pixel should be blue")
+	}
+}
+
+func TestReadChartWithAIReplies(t *testing.T) {
+	cases := []struct {
+		name, body, want string
+	}{
+		{"thinking only", `{"stop_reason":"max_tokens","content":[{"type":"thinking","thinking":""}]}`, "ran out of room"},
+		{"refusal", `{"stop_reason":"refusal","content":[]}`, "declined"},
+		{"text after thinking", `{"stop_reason":"end_turn","content":[{"type":"thinking","thinking":""},{"type":"text","text":"` + "```" + `\ntitle: X\nkey: C\n## Verse\n[C]啊\n` + "```" + `"}]}`, ""},
+	}
+	for _, c := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var req map[string]any
+			json.NewDecoder(r.Body).Decode(&req)
+			if req["max_tokens"].(float64) < 16000 {
+				t.Errorf("max_tokens too small for a thinking model: %v", req["max_tokens"])
+			}
+			io.WriteString(w, c.body)
+		}))
+		old := aiEndpoint
+		aiEndpoint = srv.URL
+		text, err := ReadChartWithAI("k", "", "", []aiImage{{"image/png", []byte{1}}})
+		aiEndpoint = old
+		srv.Close()
+		if c.want == "" {
+			if err != nil || !strings.HasPrefix(text, "title: X") || strings.Contains(text, "```") {
+				t.Errorf("%s: got %q %v", c.name, text, err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want error with %q, got %v", c.name, c.want, err)
+		}
 	}
 }
