@@ -1,8 +1,11 @@
 # Chord Key Changer — User Guide
 
-**Version:** v1.0.0 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
+**Version:** v1.1.0 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
 
-Changes the key of a worship song chord chart (**PDF** or **Word .docx**) in one click. Only the chord letters change; fonts, colours, layout, lyrics and jianpu numbers stay exactly the same.
+Two tabs:
+
+- **Change Key** — changes the key of a worship song chord chart (**PDF** or **Word .docx**) in one click. Only the chord letters change; fonts, colours, layout, lyrics and jianpu numbers stay exactly the same.
+- **Make Chart** — makes a new chart in the house layout from lyrics and chord screenshots (see section 7).
 
 ---
 
@@ -89,16 +92,66 @@ C   C#   D   D#   E   F   F#   G   G#   A   Bb   B
 
 ---
 
-## 7. Version history
+## 7. Make Chart (new chart from screenshots)
+
+1. Click **Make Chart** at the top right.
+2. Paste the lyrics into **Chart text** (Traditional is fine — it is converted to Simplified).
+3. Add the chord screenshots, any website format (chords above lyrics, guitar TAB, jianpu):
+   - drag image files onto the window, or **Add images…**, or
+   - take a screenshot with **Win+Shift+S** and click **Paste image**.
+4. Paste your **Claude API key** in the API key box (once — it is remembered).
+5. Click **Read with AI** (10–40 seconds). The chart text appears in the box.
+6. Check the chord positions and fix anything by typing. **Ctrl+Z** brings back the text from before.
+7. **Create Word…** → save. The name is filled in, e.g. `G Key - 海屿你.docx`.
+
+The Word file can go straight into **Change Key** for other keys.
+
+### Chart text format
+
+```
+title: 海屿你
+tempo: 75
+key: G
+intro: | G | D/F# | Em | C |
+## Verse
+[G]从不主动示弱
+[D/F#]我们的过去 [Em]分分合合太多
+===
+## Chorus
+[C]我不知为何 [D]疯狂对你执着
+[D]求你别离开我　[G]
+```
+
+| Write | Means |
+|---|---|
+| `[C]` before a syllable | a bar starts on that syllable with chord C |
+| `[Em7 D]` | two chords in one bar |
+| `## Verse` | boxed section name |
+| `===` | start the second column here |
+| `(…)` line | small grey note |
+| `intro:` with `//` | a second intro row, e.g. `\| C \| D \| // \| Am7 \| D \|` |
+
+Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a held chord); sharps except Bb; capo charts keep the shape key; at most 13 Chinese characters a line.
+
+### API key and cost
+
+- Get a key at **console.anthropic.com → API Keys**. Usage is billed per request — roughly a few US cents per song, no monthly fee.
+- The key is saved in `%APPDATA%\Chord Key Changer\settings.json` (plain text in your Windows profile). The `ANTHROPIC_API_KEY` environment variable also works.
+- Needs internet only for **Read with AI**; typing a chart and **Create Word** work offline.
+
+---
+
+## 8. Version history
 
 | Version | Date | Changes |
 |---|---|---|
+| v1.1.0 | 2026-11-11 | **Make Chart** tab: chart text → Word chart in the house layout; Read with AI from chord screenshots (files, drag-drop or clipboard) |
 | v1.0.0 | 2026-11-08 | First release: PDF + DOCX, key detection, Open/Save dialogs, Bb-only-flat spelling |
 
 ---
 
-## 8. For maintainers
+## 9. For maintainers
 
-- **Source:** Go, standard library only. Files: `gui_windows.go` (window/dialogs), `transpose.go` (chords, key detection, conversion), `pdf.go` (PDF reader/writer).
+- **Source:** Go, standard library only. Files: `gui_windows.go` (window/dialogs), `chartui_windows.go` (Make Chart page), `chart.go` (chart text → .docx), `ai.go` (Claude API + settings), `dib.go` (clipboard image → PNG), `transpose.go` (chords, key detection, conversion), `pdf.go` (PDF reader/writer).
 - **Build:** `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.Version=v1.0.1" -o "Chord Key Changer.exe" .`
-- **Release:** `git tag v1.0.1 && git push origin v1.0.1`. GitHub Actions builds the exe and publishes a new Release.
+- **Release:** every push to `main` is tested, built and published automatically as `build-<n>`. A tag (`git tag v1.1.1 && git push origin v1.1.1`) also publishes a named release.

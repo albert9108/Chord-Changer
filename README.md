@@ -1,6 +1,9 @@
 # Chord Key Changer
 
-Windows app that changes the key of a worship song chord chart (**PDF** or **Word .docx**) without touching fonts, colours or layout.
+Windows app for worship song chord charts:
+
+- **Change Key** — changes the key of a chart (**PDF** or **Word .docx**) without touching fonts, colours or layout.
+- **Make Chart** — builds a new chart in the house layout from lyrics + chord screenshots (Claude API reads the screenshots).
 
 ## Use
 Full guide: [USER_GUIDE.md](USER_GUIDE.md)
@@ -13,6 +16,9 @@ Full guide: [USER_GUIDE.md](USER_GUIDE.md)
 The window follows the Windows light/dark app theme and scales with per-monitor DPI.
 
 Download the latest `Chord Key Changer.exe` from **[Releases](../../releases)**. First run: Windows SmartScreen may warn because the exe is unsigned → *More info → Run anyway*.
+
+## Make Chart
+Paste lyrics, add chord screenshots (drag-drop, **Add images…**, or **Paste image** after Win+Shift+S), enter a Claude API key once, **Read with AI**, check, **Create Word…**. Details and the chart text format: [USER_GUIDE.md §7](USER_GUIDE.md#7-make-chart-new-chart-from-screenshots).
 
 ## Chord spelling (house rule)
 `C  C#  D  D#  E  F  F#  G  G#  A  Bb  B` — **Bb is the only flat**; Db→C#, Eb→D#, Ab→G#.
@@ -46,8 +52,11 @@ Pure Go standard library, no dependencies.
 # Windows exe (from any OS)
 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui" -o "Chord Key Changer.exe" .
 
-# Command-line test harness (Linux/macOS): IN OUT TARGET_KEY
-go build -o chordkey . && ./chordkey "G Key - Song.pdf" out.pdf F
+# Command-line test harness (Linux/macOS)
+go build -o chordkey .
+./chordkey "G Key - Song.pdf" out.pdf F          # transpose
+./chordkey chart song.txt "G Key - Song.docx"    # chart text -> Word chart
+ANTHROPIC_API_KEY=... ./chordkey ai song.txt [lyrics.txt] shot1.png shot2.png
 ```
 
 ## Releases
@@ -67,6 +76,10 @@ A failing `go test` stops the run before anything is published.
 | File | Purpose |
 |---|---|
 | `gui_windows.go` | Windows window and custom-drawn UI, Open/Save dialogs (Win32, no libraries) |
+| `chartui_windows.go` | Make Chart page: text box, screenshots, clipboard, Read with AI, Create Word |
+| `chart.go` | Chart text parser and .docx writer (house layout) |
+| `ai.go` | Claude API call (screenshots → chart text) and saved settings |
+| `dib.go` | Clipboard bitmap → PNG |
 | `transpose.go` | Chord transposition, key detection, PDF + DOCX conversion |
 | `pdf.go` | Minimal PDF reader/writer (xref tables/streams, object streams) |
 | `cli.go` | Command-line harness for testing on non-Windows |

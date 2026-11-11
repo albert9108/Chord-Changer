@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"unsafe"
 )
@@ -53,6 +54,16 @@ var (
 	pSetWindowPos       = user32.NewProc("SetWindowPos")
 	pDrawTextW          = user32.NewProc("DrawTextW")
 	pGetKeyState        = user32.NewProc("GetKeyState")
+	pSetFocus           = user32.NewProc("SetFocus")
+	pSetWindowTextW     = user32.NewProc("SetWindowTextW")
+	pGetWindowTextW     = user32.NewProc("GetWindowTextW")
+	pGetWindowTextLenW  = user32.NewProc("GetWindowTextLengthW")
+	pSendMessageW       = user32.NewProc("SendMessageW")
+	pPostMessageW       = user32.NewProc("PostMessageW")
+	pOpenClipboard      = user32.NewProc("OpenClipboard")
+	pCloseClipboard     = user32.NewProc("CloseClipboard")
+	pGetClipboardData   = user32.NewProc("GetClipboardData")
+	pIsClipFmtAvailable = user32.NewProc("IsClipboardFormatAvailable")
 
 	pGetDeviceCaps         = gdi32.NewProc("GetDeviceCaps")
 	pCreateFontW           = gdi32.NewProc("CreateFontW")
@@ -66,10 +77,15 @@ var (
 	pBitBlt                = gdi32.NewProc("BitBlt")
 	pGdiFlush              = gdi32.NewProc("GdiFlush")
 	pSetTextCharacterExtra = gdi32.NewProc("SetTextCharacterExtra")
+	pSetBkColor            = gdi32.NewProc("SetBkColor")
+	pCreateSolidBrush      = gdi32.NewProc("CreateSolidBrush")
 
 	pGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 	pCreateActCtxW    = kernel32.NewProc("CreateActCtxW")
 	pActivateActCtx   = kernel32.NewProc("ActivateActCtx")
+	pGlobalLock       = kernel32.NewProc("GlobalLock")
+	pGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
+	pGlobalSize       = kernel32.NewProc("GlobalSize")
 
 	pGetOpenFileNameW = comdlg32.NewProc("GetOpenFileNameW")
 	pGetSaveFileNameW = comdlg32.NewProc("GetSaveFileNameW")
@@ -102,6 +118,23 @@ const (
 	wmDropFiles     = 0x0233
 	wmMouseLeave    = 0x02A3
 	wmDpiChanged    = 0x02E0
+	wmSetFont       = 0x0030
+	wmCtlColorEdit  = 0x0133
+	wmAIDone        = 0x8001 // WM_APP+1
+
+	wsChild       = 0x40000000
+	wsVScroll     = 0x00200000
+	wsTabStop     = 0x00010000
+	esMultiline   = 0x0004
+	esPassword    = 0x0020
+	esAutoVScroll = 0x0040
+	esAutoHScroll = 0x0080
+	esNoHideSel   = 0x0100
+	esWantReturn  = 0x1000
+	emSetSel      = 0x00B1
+	emReplaceSel  = 0x00C2
+	emSetLimit    = 0x00C5
+	emSetMargins  = 0x00D3
 
 	vkTab    = 0x09
 	vkReturn = 0x0D
@@ -134,6 +167,7 @@ const (
 	ofnExplorer        = 0x00080000
 	ofnNoChangeDir     = 0x0008
 	ofnHideReadOnly    = 0x0004
+	ofnAllowMulti      = 0x0200
 
 	srcCopy = 0x00CC0020
 	idcHand = 32649
@@ -516,9 +550,21 @@ const (
 )
 
 const (
-	itemNone    = -1
-	itemBrowse  = 12
-	itemConvert = 13
+	itemNone     = -1
+	itemBrowse   = 12
+	itemConvert  = 13
+	itemTabKey   = 20
+	itemTabChart = 21
+	itemAddImg   = 22
+	itemPasteImg = 23
+	itemClearImg = 24
+	itemReadAI   = 25
+	itemCreate   = 26
+)
+
+const (
+	pageKey   = 0
+	pageChart = 1
 )
 
 type rectF struct{ x, y, w, h float64 }
@@ -547,6 +593,23 @@ var (
 
 	rCard, rBrowse, rConvert rectF
 	rChips                   [12]rectF
+	rTabs                    [2]rectF
+
+	// chart maker page
+	page                                      = pageKey
+	rEditBox, rAddImg, rPasteImg, rClearImg   rectF
+	rReadAI, rCreate, rKeyBox                 rectF
+	hEdit, hKeyEdit, hEditBrush, fEdit, fKey2 uintptr
+	chartImgs                                 []aiImage
+	chartImgNames                             []string
+	pastedCount                               int
+	settings                                  appSettings
+	lastChartDir                              string
+
+	aiMu     sync.Mutex
+	aiBusy   bool
+	aiResult string
+	aiErr    error
 
 	memDC, memBmp, oldBmp uintptr
 	cv                    canvas
@@ -576,6 +639,31 @@ func layout() {
 		}
 	}
 	rConvert = rectF{scf(padX), scf(398), scf(210), scf(46)}
+
+	for i := range rTabs {
+		rTabs[i] = rectF{scf(winW - padX - 232 + float64(i)*116), scf(20), scf(116), scf(32)}
+	}
+	rEditBox = rectF{scf(padX), scf(110), scf(winW - 2*padX), scf(236)}
+	rAddImg = rectF{scf(padX), scf(374), scf(120), scf(34)}
+	rPasteImg = rectF{scf(padX + 128), scf(374), scf(120), scf(34)}
+	rClearImg = rectF{scf(padX + 256), scf(374), scf(70), scf(34)}
+	rReadAI = rectF{scf(winW - padX - 160), scf(374), scf(160), scf(34)}
+	rCreate = rectF{scf(padX), scf(414), scf(190), scf(36)}
+	rKeyBox = rectF{scf(300), scf(416), scf(winW - padX - 300), scf(32)}
+	placeEdits()
+}
+
+// placeEdits puts the native edit boxes inside their painted frames.
+func placeEdits() {
+	in := func(h uintptr, r rectF, ix, iy float64) {
+		if h == 0 {
+			return
+		}
+		pSetWindowPos.Call(h, 0, uintptr(int32(r.x+scf(ix))), uintptr(int32(r.y+scf(iy))),
+			uintptr(int32(r.w-2*scf(ix))), uintptr(int32(r.h-2*scf(iy))), 0x0004|0x0010)
+	}
+	in(hEdit, rEditBox, 8, 6)
+	in(hKeyEdit, rKeyBox, 10, 7)
 }
 
 func mkFont(tenths int32, weight uintptr) uintptr {
@@ -601,6 +689,25 @@ func makeFonts() {
 	fBtn = mkFont(108, 600)
 	fStatus = mkFont(90, 400)
 	fSection = mkFont(80, 700)
+	for _, f := range []uintptr{fEdit, fKey2} {
+		if f != 0 {
+			pDeleteObject.Call(f)
+		}
+	}
+	fEdit = mkFontFace(105, 400, "Microsoft YaHei UI")
+	fKey2 = mkFontFace(100, 400, "Segoe UI")
+	for _, p := range [][2]uintptr{{hEdit, fEdit}, {hKeyEdit, fKey2}} {
+		if p[0] != 0 {
+			pSendMessageW.Call(p[0], wmSetFont, p[1], 1)
+		}
+	}
+}
+
+func mkFontFace(tenths int32, weight uintptr, face string) uintptr {
+	h := uintptr(-(tenths*dpi)/720) & 0xffffffff
+	f, _, _ := pCreateFontW.Call(h, 0, 0, 0, weight, 0, 0, 0,
+		1, 0, 0, 5, 0, uintptr(unsafe.Pointer(u16(face))))
+	return f
 }
 
 // ----------------------------------------------------------------- painting
@@ -690,13 +797,28 @@ func loaded() bool { return curPath != "" }
 func keyed() bool { return curKey.Key != "" }
 
 func enabled(id int) bool {
+	switch id {
+	case itemNone:
+		return false
+	case itemTabKey, itemTabChart:
+		return true
+	}
+	if page == pageChart {
+		switch id {
+		case itemAddImg, itemPasteImg, itemCreate:
+			return !aiBusy
+		case itemClearImg, itemReadAI:
+			return !aiBusy && len(chartImgs) > 0
+		}
+		return false
+	}
 	if id == itemBrowse {
 		return true
 	}
-	if id == itemNone {
-		return false
+	if id >= 0 && id < 12 || id == itemConvert {
+		return keyed()
 	}
-	return keyed()
+	return false
 }
 
 func chipLabel(i int) string {
@@ -707,13 +829,65 @@ func chipLabel(i int) string {
 }
 
 func paint(hdc uintptr) {
-	ok := loaded()
 	c := &cv
 	c.clear(th.bg)
-
-	// ---- shapes ----
 	c.fillRect(0, scf(78), float64(c.w), scf(1), th.border, 1)
 
+	// page tabs (segmented control)
+	seg := rectF{rTabs[0].x, rTabs[0].y, rTabs[1].x + rTabs[1].w - rTabs[0].x, rTabs[0].h}
+	c.fillRound(seg.x, seg.y, seg.w, seg.h, scf(9), th.chip, 1)
+	c.strokeRound(seg.x, seg.y, seg.w, seg.h, scf(9), scf(1), th.chipBorder, 1, 0)
+	for i, r := range rTabs {
+		id := itemTabKey + i
+		if page == i {
+			c.fillRound(r.x+scf(3), r.y+scf(3), r.w-scf(6), r.h-scf(6), scf(7), th.accent, 1)
+		} else if hot == id {
+			c.fillRound(r.x+scf(3), r.y+scf(3), r.w-scf(6), r.h-scf(6), scf(7), th.chipHot, 1)
+		}
+		if focus == id {
+			ring(c, r, scf(9))
+		}
+	}
+
+	if page == pageKey {
+		paintKeyShapes(c)
+	} else {
+		paintChartShapes(c)
+	}
+	c.fillRect(0, scf(456), float64(c.w), scf(1), th.border, 1)
+
+	// ---- text (GDI paints on top of the shapes) ----
+	const sl = dtSingleLine | dtVCenter | dtNoPrefix
+	drawText(hdc, "Chord Key Changer", fTitle, th.text,
+		rectF{scf(padX), scf(16), scf(300), scf(30)}, dtLeft|sl, 0)
+	sub := "Transpose a chart without touching its layout."
+	if page == pageChart {
+		sub = "Make a new chart from lyrics and chord screenshots."
+	}
+	drawText(hdc, sub, fSub, th.muted,
+		rectF{scf(padX), scf(48), scf(340), scf(20)}, dtLeft|sl|dtEndEllipsis, 0)
+	for i, label := range []string{"Change Key", "Make Chart"} {
+		tc := th.text
+		if page == i {
+			tc = th.onAccent
+		}
+		drawText(hdc, label, fBtn, tc, rTabs[i], dtCenter|sl, 0)
+	}
+
+	if page == pageKey {
+		paintKeyText(hdc)
+	} else {
+		paintChartText(hdc)
+	}
+
+	drawText(hdc, status, fStatus, th.muted,
+		rectF{scf(padX), scf(464), scf(winW - 2*padX - 110), scf(22)}, dtLeft|sl|dtEndEllipsis, 0)
+	drawText(hdc, Version, fStatus, th.muted,
+		rectF{scf(winW - padX - 100), scf(464), scf(100), scf(22)}, dtRight|sl, 0)
+}
+
+func paintKeyShapes(c *canvas) {
+	ok := loaded()
 	rad := scf(12)
 	c.shadow(rCard.x, rCard.y+scf(3), rCard.w, rCard.h, rad, scf(10), th.shadowA, th.shadowCol)
 	if ok {
@@ -792,17 +966,15 @@ func paint(hdc uintptr) {
 		ring(c, rConvert, cr)
 	}
 
-	c.fillRect(0, scf(456), float64(c.w), scf(1), th.border, 1)
+}
 
-	// ---- text (GDI paints on top of the shapes) ----
+func paintKeyText(hdc uintptr) {
+	ok := loaded()
+	cur := -1
+	if keyed() {
+		cur = KeyRoot(curKey.Key)
+	}
 	const sl = dtSingleLine | dtVCenter | dtNoPrefix
-	drawText(hdc, "Chord Key Changer", fTitle, th.text,
-		rectF{scf(padX), scf(16), scf(420), scf(30)}, dtLeft|sl, 0)
-	drawText(hdc, "Transpose a chord chart without touching its fonts or layout.", fSub, th.muted,
-		rectF{scf(padX), scf(48), scf(500), scf(20)}, dtLeft|sl, 0)
-	drawText(hdc, Version, fSub, th.muted,
-		rectF{scf(winW - 220), scf(22), scf(220 - padX), scf(20)}, dtRight|sl, 0)
-
 	if ok {
 		drawText(hdc, filepath.Base(curPath), fName, th.text,
 			rectF{scf(86), scf(114), scf(486), scf(22)}, dtLeft|sl|dtEndEllipsis, 0)
@@ -853,8 +1025,91 @@ func paint(hdc uintptr) {
 	}
 	drawText(hdc, cl, fBtn, ct, rConvert, dtCenter|sl, 0)
 
-	drawText(hdc, status, fStatus, th.muted,
-		rectF{scf(padX), scf(464), scf(winW - 2*padX), scf(22)}, dtLeft|sl|dtEndEllipsis, 0)
+}
+
+// button paints a rounded button; primary ones are filled with the accent.
+func button(c *canvas, r rectF, id int, primary bool) {
+	cr := scf(10)
+	switch {
+	case !enabled(id):
+		c.fillRound(r.x, r.y, r.w, r.h, cr, th.chip, 0.6)
+		c.strokeRound(r.x, r.y, r.w, r.h, cr, scf(1), th.chipBorder, 0.6, 0)
+	case primary:
+		a := th.accent
+		if hot == id {
+			a = th.accentHi
+		}
+		if pressed == id {
+			a = mix(th.accent, hexc(0x000000), 0.14)
+		}
+		c.shadow(r.x, r.y+scf(3), r.w, r.h, cr, scf(8), 0.28, th.accent)
+		c.fillRound(r.x, r.y, r.w, r.h, cr, a, 1)
+	default:
+		bg := th.surface
+		if hot == id {
+			bg = th.chipHot
+		}
+		if pressed == id {
+			bg = mix(th.chipHot, th.accent, 0.12)
+		}
+		c.fillRound(r.x, r.y, r.w, r.h, cr, bg, 1)
+		c.strokeRound(r.x, r.y, r.w, r.h, cr, scf(1), th.chipBorder, 1, 0)
+	}
+	if focus == id {
+		ring(c, r, cr)
+	}
+}
+
+func buttonText(hdc uintptr, r rectF, id int, primary bool, label string) {
+	tc := th.text
+	switch {
+	case !enabled(id):
+		tc = th.muted
+	case primary:
+		tc = th.onAccent
+	}
+	drawText(hdc, label, fBtn, tc, r, dtCenter|dtSingleLine|dtVCenter|dtNoPrefix, 0)
+}
+
+func paintChartShapes(c *canvas) {
+	for _, r := range []rectF{rEditBox, rKeyBox} {
+		c.fillRound(r.x, r.y, r.w, r.h, scf(10), th.surface, 1)
+		c.strokeRound(r.x, r.y, r.w, r.h, scf(10), scf(1), th.border, 1, 0)
+	}
+	button(c, rAddImg, itemAddImg, false)
+	button(c, rPasteImg, itemPasteImg, false)
+	button(c, rClearImg, itemClearImg, false)
+	button(c, rReadAI, itemReadAI, len(chartImgs) > 0)
+	button(c, rCreate, itemCreate, true)
+}
+
+func paintChartText(hdc uintptr) {
+	const sl = dtSingleLine | dtVCenter | dtNoPrefix
+	drawText(hdc, "CHART TEXT", fSection, th.muted,
+		rectF{scf(padX), scf(90), scf(200), scf(16)}, dtLeft|sl, sc(0.9))
+	drawText(hdc, "Paste lyrics, or edit:  [C]我来到[D]神面前", fLabel, th.muted,
+		rectF{scf(240), scf(88), scf(winW - padX - 240), scf(20)}, dtRight|sl|dtEndEllipsis, 0)
+
+	drawText(hdc, "CHORD SCREENSHOTS", fSection, th.muted,
+		rectF{scf(padX), scf(352), scf(160), scf(16)}, dtLeft|sl, sc(0.9))
+	info := "none yet — drop images on the window, or paste a screenshot"
+	if n := len(chartImgNames); n > 0 {
+		info = fmt.Sprintf("%d added: %s", n, strings.Join(chartImgNames, ", "))
+	}
+	drawText(hdc, info, fLabel, th.muted,
+		rectF{scf(170), scf(350), scf(winW - padX - 170), scf(20)}, dtLeft|sl|dtEndEllipsis, 0)
+
+	buttonText(hdc, rAddImg, itemAddImg, false, "Add images…")
+	buttonText(hdc, rPasteImg, itemPasteImg, false, "Paste image")
+	buttonText(hdc, rClearImg, itemClearImg, false, "Clear")
+	ai := "Read with AI"
+	if aiBusy {
+		ai = "Reading…"
+	}
+	buttonText(hdc, rReadAI, itemReadAI, len(chartImgs) > 0, ai)
+	buttonText(hdc, rCreate, itemCreate, true, "Create Word…")
+	drawText(hdc, "API key", fLabel, th.muted,
+		rectF{scf(226), rKeyBox.y, scf(70), rKeyBox.h}, dtLeft|sl, 0)
 }
 
 func onPaint(hwnd uintptr) {
@@ -878,15 +1133,36 @@ func repaint() { pInvalidateRect.Call(hMain, 0, 0) }
 
 // -------------------------------------------------------------- interaction
 
-var tabOrder = func() []int {
-	o := []int{itemBrowse}
+func tabOrder() []int {
+	o := []int{itemTabKey, itemTabChart}
+	if page == pageChart {
+		return append(o, itemAddImg, itemPasteImg, itemClearImg, itemReadAI, itemCreate)
+	}
+	o = append(o, itemBrowse)
 	for i := 0; i < 12; i++ {
 		o = append(o, i)
 	}
 	return append(o, itemConvert)
-}()
+}
 
 func hitTest(x, y float64) int {
+	for i, r := range rTabs {
+		if r.hit(x, y) {
+			return itemTabKey + i
+		}
+	}
+	if page == pageChart {
+		for _, b := range []struct {
+			r  rectF
+			id int
+		}{{rAddImg, itemAddImg}, {rPasteImg, itemPasteImg}, {rClearImg, itemClearImg},
+			{rReadAI, itemReadAI}, {rCreate, itemCreate}} {
+			if b.r.hit(x, y) {
+				return b.id
+			}
+		}
+		return itemNone
+	}
 	if rConvert.hit(x, y) {
 		return itemConvert
 	}
@@ -902,18 +1178,19 @@ func hitTest(x, y float64) int {
 }
 
 func moveFocus(dir int) {
+	order := tabOrder()
 	idx := -1
-	for i, id := range tabOrder {
+	for i, id := range order {
 		if id == focus {
 			idx = i
 			break
 		}
 	}
-	n := len(tabOrder)
+	n := len(order)
 	for k := 1; k <= n; k++ {
 		j := ((idx+dir*k)%n + n) % n
-		if enabled(tabOrder[j]) {
-			focus = tabOrder[j]
+		if enabled(order[j]) {
+			focus = order[j]
 			repaint()
 			return
 		}
@@ -922,6 +1199,22 @@ func moveFocus(dir int) {
 
 func activate(id int) {
 	switch {
+	case id == itemTabKey:
+		setPage(pageKey)
+	case id == itemTabChart:
+		setPage(pageChart)
+	case id == itemAddImg:
+		safe(onAddImages)
+	case id == itemPasteImg:
+		safe(onPasteImage)
+	case id == itemClearImg:
+		chartImgs, chartImgNames, pastedCount = nil, nil, 0
+		status = "Screenshots cleared."
+		repaint()
+	case id == itemReadAI:
+		safe(onReadAI)
+	case id == itemCreate:
+		safe(onCreateChart)
 	case id == itemBrowse:
 		safe(onBrowse)
 	case id == itemConvert:
@@ -946,9 +1239,15 @@ func applyTheme() {
 		return
 	}
 	th = nt
+	makeEditBrush()
 	if hMain != 0 {
 		applyChrome(hMain, th.dark)
 		repaint()
+		for _, h := range []uintptr{hEdit, hKeyEdit} {
+			if h != 0 {
+				pInvalidateRect.Call(h, 0, 1)
+			}
+		}
 	}
 }
 
@@ -1168,6 +1467,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		}
 
 	case wmLButtonDown:
+		pSetFocus.Call(hwnd)
 		x, y := mousePos(lParam)
 		h := hitTest(x, y)
 		if enabled(h) {
@@ -1203,7 +1503,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			}
 			return 0
 		case vkLeft, vkRight, vkUp, vkDown:
-			if focus >= 0 && focus < 12 && keyed() {
+			if page == pageKey && focus >= 0 && focus < 12 && keyed() {
 				n := focus
 				switch wParam {
 				case vkLeft:
@@ -1224,13 +1524,26 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		}
 
 	case wmDropFiles:
-		buf := make([]uint16, 4096)
-		if r, _, _ := pDragQueryFileW.Call(wParam, 0,
-			uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))); r > 0 {
-			p := syscall.UTF16ToString(buf)
-			safe(func() { loadFile(p) })
+		var paths []string
+		n, _, _ := pDragQueryFileW.Call(wParam, 0xFFFFFFFF, 0, 0)
+		for i := uintptr(0); i < n; i++ {
+			buf := make([]uint16, 4096)
+			if r, _, _ := pDragQueryFileW.Call(wParam, i,
+				uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))); r > 0 {
+				paths = append(paths, syscall.UTF16ToString(buf))
+			}
 		}
 		pDragFinish.Call(wParam)
+		safe(func() { onDropped(paths) })
+		return 0
+
+	case wmCtlColorEdit:
+		pSetTextColor.Call(wParam, colref(th.text))
+		pSetBkColor.Call(wParam, colref(th.surface))
+		return hEditBrush
+
+	case wmAIDone:
+		onAIDone()
 		return 0
 
 	case wmSettingChange:
@@ -1274,6 +1587,8 @@ func main() {
 	if systemDark() {
 		th = darkTheme()
 	}
+	makeEditBrush()
+	settings = loadSettings()
 	makeFonts()
 	layout()
 
@@ -1303,6 +1618,7 @@ func main() {
 		pSetWindowPos.Call(hMain, 0, 0, 0, uintptr(rc.r-rc.l), uintptr(rc.b-rc.t), 0x0002|0x0004|0x0010)
 	}
 
+	createEdits()
 	applyChrome(hMain, th.dark)
 	pDragAcceptFiles.Call(hMain, 1)
 	pShowWindow.Call(hMain, 1)
