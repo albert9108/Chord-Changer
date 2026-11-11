@@ -1,6 +1,6 @@
 # Chord Key Changer — User Guide
 
-**Version:** v1.1.0 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
+**Version:** v1.3.0 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
 
 Two tabs:
 
@@ -145,7 +145,7 @@ Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a hel
 
 | Version | Date | Changes |
 |---|---|---|
-| v1.1.0 | 2026-11-11 | **Make Chart** tab: chart text → Word chart in the house layout; Read with AI from chord screenshots (files, drag-drop or clipboard) |
+| v1.3.0 (build-6) | 2026-11-11 | **Make Chart** tab: chart text → Word chart in the house layout; Read with AI from chord screenshots (files, drag-drop or clipboard) |
 | v1.0.0 | 2026-11-08 | First release: PDF + DOCX, key detection, Open/Save dialogs, Bb-only-flat spelling |
 
 ---
@@ -154,4 +154,4 @@ Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a hel
 
 - **Source:** Go, standard library only. Files: `gui_windows.go` (window/dialogs), `chartui_windows.go` (Make Chart page), `chart.go` (chart text → .docx), `ai.go` (Claude API + settings), `dib.go` (clipboard image → PNG), `transpose.go` (chords, key detection, conversion), `pdf.go` (PDF reader/writer).
 - **Build:** `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.Version=v1.0.1" -o "Chord Key Changer.exe" .`
-- **Release:** every push to `main` is tested, built and published automatically as `build-<n>`. A tag (`git tag v1.1.1 && git push origin v1.1.1`) also publishes a named release.
+- **Release:** every push to `main` is tested, built and published automatically as `build-<n>`. A tag (`git tag v1.3.1 && git push origin v1.3.1`) also publishes a named release.
