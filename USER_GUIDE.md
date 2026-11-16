@@ -1,6 +1,6 @@
 # Chord Key Changer — User Guide
 
-**Version:** v1.3.2 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
+**Version:** v1.4.0 · **Platform:** Windows 10 / 11 (64-bit), Android 7+ · **Install:** none, single `.exe`
 
 Two tabs:
 
@@ -142,10 +142,33 @@ Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a hel
 
 ---
 
-## 8. Version history
+## 8. Android app
+
+Same two tabs as the Windows app, on your phone.
+
+**Install**
+1. On the phone, open the latest release page and download **Chord Key Changer.apk**.
+2. Open it. If Android says the browser "is not allowed to install unknown apps", tap **Settings → Allow from this source**, then go back and **Install**.
+3. Updating later: download the new apk and install it over the old one.
+
+**Make Chart**
+- Paste the lyrics into the text box, or **share** lyrics text from the browser to *Chord Key Changer*.
+- **Add screenshots** (photo picker), or share screenshots from Gallery / Photos to the app. Long scrolling screenshots are cut into pieces automatically so small chord letters stay readable.
+- Paste the API key once, tap **Read with AI**, check, then **Create Word** → choose where to save → **Share** (WhatsApp etc.) or **Open**.
+- Read with AI replaces the text; **long-press Create Word** to bring back what was there before.
+
+**Change Key**
+- **Choose chart** (or share a PDF / Word chart to the app) → the current key is shown → tap the new key → **Convert** → save → Share / Open.
+
+Opening Word files on the phone needs Microsoft Word, WPS Office or Google Docs. The API key is kept in the app's private storage.
+
+---
+
+## 9. Version history
 
 | Version | Date | Changes |
 |---|---|---|
+| v1.4.0 | 2026-11-16 | **Android app** (apk on every release): Make Chart and Change Key, share-to-app for screenshots / lyrics / charts |
 | v1.3.2 | 2026-11-16 | Always one page: columns balanced automatically at a section, fonts shrink to fit; long lines split at a space; Intro row always shown (empty if no intro); instrumental sections as a chord row |
 | v1.3.1 | 2026-11-11 | Fix "AI returned no chart": leave room for Sonnet 5.5's built-in thinking; clearer AI error messages; key-change choruses written as their own section |
 | v1.3.0 (build-6) | 2026-11-11 | **Make Chart** tab: chart text → Word chart in the house layout; Read with AI from chord screenshots (files, drag-drop or clipboard) |
@@ -153,8 +176,9 @@ Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a hel
 
 ---
 
-## 9. For maintainers
+## 10. For maintainers
 
 - **Source:** Go, standard library only. Files: `gui_windows.go` (window/dialogs), `chartui_windows.go` (Make Chart page), `chart.go` (chart text → .docx), `ai.go` (Claude API + settings), `dib.go` (clipboard image → PNG), `transpose.go` (chords, key detection, conversion), `pdf.go` (PDF reader/writer).
 - **Build:** `GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H windowsgui -X main.Version=v1.0.1" -o "Chord Key Changer.exe" .`
+- **Android:** `android/` (Java UI, `MainActivity.java`). `android/build-aar.sh` copies the engine files into package `engine` and runs `gomobile bind` with `android/gobind/api.go` to make `chordkey.aar`; then `gradle -p android assembleRelease`. Signing key from the `ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` secrets (alias `chordkey`). Branch pushes (`claude/**`) also run an emulator smoke test (`.github/smoke.sh`).
 - **Release:** every push to `main` is tested, built and published automatically as `build-<n>`. A tag (`git tag v1.3.1 && git push origin v1.3.1`) also publishes a named release.

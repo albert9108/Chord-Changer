@@ -5,6 +5,8 @@ Windows app for worship song chord charts:
 - **Change Key** — changes the key of a chart (**PDF** or **Word .docx**) without touching fonts, colours or layout.
 - **Make Chart** — builds a new chart in the house layout from lyrics + chord screenshots (Claude API reads the screenshots).
 
+Available as a Windows exe and an **Android apk** — both on every release.
+
 ## Use
 Full guide: [USER_GUIDE.md](USER_GUIDE.md)
 
@@ -80,6 +82,7 @@ A failing `go test` stops the run before anything is published.
 | `chart.go` | Chart text parser and .docx writer (house layout) |
 | `ai.go` | Claude API call (screenshots → chart text) and saved settings |
 | `dib.go` | Clipboard bitmap → PNG |
+| `android/` | Android app (Java UI) + `gobind/api.go` bridge; engine bound with gomobile |
 | `transpose.go` | Chord transposition, key detection, PDF + DOCX conversion |
 | `pdf.go` | Minimal PDF reader/writer (xref tables/streams, object streams) |
 | `cli.go` | Command-line harness for testing on non-Windows |
