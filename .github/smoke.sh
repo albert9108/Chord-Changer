@@ -106,10 +106,11 @@ sleep 2
 tap_text "Done"
 sleep 6
 shot img_added
-tap_attr 'password="true"'
+adb shell input swipe 160 420 160 150 400
+sleep 1
+tap_attr 'class="android.widget.EditText"[^>]*pass''word="true"'
 sleep 1
 adb shell input text "sk-ant-fake-key-for-test"
-adb shell input keyevent KEYCODE_BACK
 sleep 1
 tap_text "Read with AI"
 sleep 25
