@@ -600,7 +600,7 @@ var (
 	rEditBox, rAddImg, rPasteImg, rClearImg   rectF
 	rReadAI, rCreate, rKeyBox                 rectF
 	hEdit, hKeyEdit, hEditBrush, fEdit, fKey2 uintptr
-	chartImgs                                 []aiImage
+	chartImgs                                 []AIImage
 	chartImgNames                             []string
 	pastedCount                               int
 	settings                                  appSettings

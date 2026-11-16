@@ -21,7 +21,7 @@ var aiEndpoint = "https://api.anthropic.com/v1/messages"
 
 const (
 	aiDefaultModel = "claude-sonnet-5-5"
-	aiMaxImage     = 5 << 20 // API limit per image
+	AIMaxImage     = 5 << 20 // API limit per image
 	// Sonnet 5.5 thinks by default and thinking counts toward max_tokens,
 	// so leave plenty of room for the chart after the thinking.
 	aiMaxTokens = 32000
@@ -58,7 +58,7 @@ RULES
 11. If something is missing (e.g. a section has no chords in any screenshot), still write the lyrics and add a line in round brackets such as (此段截图没有 chord，请补上).
 12. If a section repeats with different chords (for example the last chorus moves up a key), write it again as its own section, e.g. "## Chorus 2 (Key D)", with the chords exactly as shown.`
 
-type aiImage struct {
+type AIImage struct {
 	MediaType string
 	Data      []byte
 }
@@ -77,23 +77,23 @@ func imageMediaType(path string) string {
 	return ""
 }
 
-func loadAIImage(path string) (aiImage, error) {
+func loadAIImage(path string) (AIImage, error) {
 	mt := imageMediaType(path)
 	if mt == "" {
-		return aiImage{}, errors.New("not a PNG, JPG, WEBP or GIF image")
+		return AIImage{}, errors.New("not a PNG, JPG, WEBP or GIF image")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return aiImage{}, err
+		return AIImage{}, err
 	}
-	if len(b) > aiMaxImage {
-		return aiImage{}, fmt.Errorf("%s is larger than 5 MB — crop or resize it", filepath.Base(path))
+	if len(b) > AIMaxImage {
+		return AIImage{}, fmt.Errorf("%s is larger than 5 MB — crop or resize it", filepath.Base(path))
 	}
-	return aiImage{mt, b}, nil
+	return AIImage{mt, b}, nil
 }
 
 // ReadChartWithAI sends the screenshots and lyrics to Claude and returns chart text.
-func ReadChartWithAI(apiKey, model, lyrics string, imgs []aiImage) (string, error) {
+func ReadChartWithAI(apiKey, model, lyrics string, imgs []AIImage) (string, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return "", errors.New("enter your Claude API key first")
 	}

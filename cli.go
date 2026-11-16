@@ -29,7 +29,7 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "ai" {
 		lyrics := ""
-		var imgs []aiImage
+		var imgs []AIImage
 		for _, p := range os.Args[3:] {
 			if strings.HasSuffix(strings.ToLower(p), ".txt") {
 				b, _ := os.ReadFile(p)

@@ -80,7 +80,7 @@ func replaceAllUndoable(h uintptr, s string) {
 	pSendMessageW.Call(h, emReplaceSel, 1, uintptr(unsafe.Pointer(u16(crlf(s)))))
 }
 
-func addImage(name string, im aiImage) {
+func addImage(name string, im AIImage) {
 	chartImgs = append(chartImgs, im)
 	chartImgNames = append(chartImgNames, name)
 }
@@ -202,12 +202,12 @@ func onPasteImage() {
 		msgBox(err.Error(), "Chord Key Changer", mbIconInfo)
 		return
 	}
-	if len(b) > aiMaxImage {
+	if len(b) > AIMaxImage {
 		msgBox("The pasted picture is larger than 5 MB — take a smaller screenshot.", "Chord Key Changer", mbIconWarn)
 		return
 	}
 	pastedCount++
-	addImage(fmt.Sprintf("Pasted %d", pastedCount), aiImage{"image/png", b})
+	addImage(fmt.Sprintf("Pasted %d", pastedCount), AIImage{"image/png", b})
 	status = fmt.Sprintf("%d screenshot(s) ready. Click Read with AI.", len(chartImgs))
 	repaint()
 }
@@ -230,7 +230,7 @@ func onReadAI() {
 		}
 	}
 	lyrics := getText(hEdit)
-	imgs := append([]aiImage(nil), chartImgs...)
+	imgs := append([]AIImage(nil), chartImgs...)
 	model := settings.Model
 	aiBusy = true
 	status = "Reading the screenshots with AI… (usually under a minute)"

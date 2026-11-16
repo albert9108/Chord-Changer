@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+// CI passes the version and the signing key through environment variables.
+def ksFile = System.getenv('KEYSTORE_FILE')
+
+android {
+    namespace 'com.albert.chordkey'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.albert.chordkey'
+        minSdk 24
+        targetSdk 34
+        versionCode((System.getenv('VERSION_CODE') ?: '1').toInteger())
+        versionName System.getenv('VERSION_NAME') ?: 'dev'
+    }
+
+    signingConfigs {
+        release {
+            if (ksFile) {
+                storeFile file(ksFile)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Without the real key (e.g. a local build) fall back to the debug key.
+            signingConfig ksFile ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    lint {
+        // Release lint runs offline checks only; keep the build from stopping on warnings.
+        checkReleaseBuilds false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Built by android/build-aar.sh from the shared Go engine.
+    implementation files('libs/chordkey.aar')
+}

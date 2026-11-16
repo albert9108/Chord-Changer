@@ -156,7 +156,7 @@ func TestReadChartWithAIReplies(t *testing.T) {
 		}))
 		old := aiEndpoint
 		aiEndpoint = srv.URL
-		text, err := ReadChartWithAI("k", "", "", []aiImage{{"image/png", []byte{1}}})
+		text, err := ReadChartWithAI("k", "", "", []AIImage{{"image/png", []byte{1}}})
 		aiEndpoint = old
 		srv.Close()
 		if c.want == "" {
