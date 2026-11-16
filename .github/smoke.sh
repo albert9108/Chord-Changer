@@ -40,8 +40,6 @@ adb push /tmp/t.txt /data/local/tmp/t.txt >/dev/null
 adb shell 'am start -W -a android.intent.action.SEND -t text/plain --es android.intent.extra.TEXT "$(cat /data/local/tmp/t.txt)" -n com.albert.chordkey/.MainActivity'
 sleep 3
 shot shared
-adb shell input swipe 500 1600 500 300 300
-sleep 1
 tap_text "Create Word"
 sleep 5
 shot save_dialog
@@ -52,8 +50,6 @@ tap_text "Close"
 sleep 1
 
 # Change Key: open the chart just saved, pick E, convert, save.
-adb shell input swipe 500 300 500 1600 300
-sleep 1
 tap_text "Change Key"
 sleep 1
 tap_text "Choose chart"

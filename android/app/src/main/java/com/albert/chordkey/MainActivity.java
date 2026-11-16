@@ -245,16 +245,21 @@ public class MainActivity extends Activity {
 
         readAI = button("Read with AI", true);
         readAI.setOnClickListener(v -> onReadAI());
-        p.addView(readAI, topGap(16));
-
-        createWord = button("Create Word chart", true);
+        createWord = button("Create Word", true);
         createWord.setOnClickListener(v -> onCreateWord());
-        p.addView(createWord, topGap(10));
+        return withBottomBar(p, row(readAI, createWord));
+    }
 
+    /** Scrolling content with the action buttons fixed underneath, always in reach. */
+    private View withBottomBar(View content, View bar) {
         ScrollView s = new ScrollView(this);
         s.setFillViewport(true);
-        s.addView(p);
-        return s;
+        s.addView(content);
+        LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.addView(s, lp(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        page.addView(bar, topGap(10));
+        return page;
     }
 
     private View buildKeyPage() {
@@ -292,11 +297,7 @@ public class MainActivity extends Activity {
 
         convertBtn = button("Convert", true);
         convertBtn.setOnClickListener(v -> onConvert());
-        p.addView(convertBtn, topGap(16));
-
-        ScrollView s = new ScrollView(this);
-        s.addView(p);
-        return s;
+        return withBottomBar(p, convertBtn);
     }
 
     private void showPage(boolean chart) {
@@ -534,10 +535,10 @@ public class MainActivity extends Activity {
                     String before = chartText.getText().toString();
                     chartText.setText(text);
                     refresh();
-                    setStatus("Done — check the chords, fix anything, then Create Word chart.");
+                    setStatus("Done — check the chords, fix anything, then Create Word.");
                     if (!before.trim().isEmpty()) {
                         prefs.edit().putString("before_ai", before).apply();
-                        Toast.makeText(this, "Your previous text is kept — long-press Create Word chart to restore it.",
+                        Toast.makeText(this, "Your previous text is kept — long-press Create Word to restore it.",
                                 Toast.LENGTH_LONG).show();
                     }
                 });
