@@ -168,3 +168,56 @@ func TestReadChartWithAIReplies(t *testing.T) {
 		}
 	}
 }
+
+func TestSplitLongKeepsChords(t *testing.T) {
+	ls := ParseChart("## C\n[F]你要相信 [G]相信我[C]们会像童[Am]话故事里\n").Lines
+	var lyr []ChartLine
+	for _, l := range ls {
+		if l.Kind == "lyric" {
+			lyr = append(lyr, l)
+		}
+	}
+	if len(lyr) != 2 || lyr[0].Text != "你要相信" || lyr[1].Text != "相信我们会像童话故事里" {
+		t.Fatalf("split: %+v", lyr)
+	}
+	if len(lyr[0].Chords) != 1 || lyr[1].Chords[0].Chord != "G" || lyr[1].Chords[0].X != 0 ||
+		lyr[1].Chords[1].X != 3*baseLyricPt {
+		t.Fatalf("chords: %+v", lyr)
+	}
+}
+
+func TestLayoutOnePageBalanced(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("title: T\nkey: C\nintro:\n")
+	for s := 0; s < 6; s++ {
+		b.WriteString("## Part\n")
+		for i := 0; i < 8; i++ {
+			b.WriteString("[C]我来到神面前 [G]我来到\n")
+		}
+		b.WriteString("\n")
+	}
+	c := ParseChart(b.String())
+	split := layoutColumns(c.Lines, 600)
+	defer setScale(1)
+	if c.Lines[split].Kind != "section" {
+		t.Fatalf("column should start at a section, got %+v", c.Lines[split])
+	}
+	if scale >= 1 || scale < minScale {
+		t.Fatalf("expected shrinking to fit, scale=%v", scale)
+	}
+	out, _, err := BuildChartDocx(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := docXML(t, out)
+	if !strings.Contains(x, "Intro:") || strings.Count(x, `w:type="column"`) != 1 {
+		t.Fatal("missing empty intro row or column break")
+	}
+}
+
+func TestBarsRow(t *testing.T) {
+	c := ParseChart("key: C\n## Bridge\n| C | F | C | G |\n")
+	if len(c.Lines) < 2 || c.Lines[1].Kind != "bars" || strings.Join(c.Lines[1].Bars, ",") != "C,F,C,G" {
+		t.Fatalf("%+v", c.Lines)
+	}
+}

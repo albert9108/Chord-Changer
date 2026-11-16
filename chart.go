@@ -20,20 +20,31 @@ import (
 	"html"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
-	lyricPt     = 18.0
-	chordPt     = 11.0
+	baseLyricPt = 18.0
+	baseChordPt = 11.0
 	colWidthPt  = 250.0
+	pageHeight  = 841.9 // A4, points
+	minScale    = 0.6
 	chordBlue   = "0070C0"
 	chordRed    = "C00000"
 	noteGrey    = "808080"
 	pageMarginT = 720 // 1.27 cm in twips
 )
 
+// Current font sizes. BuildChartDocx shrinks them so the chart fits one page.
+var (
+	lyricPt = baseLyricPt
+	chordPt = baseChordPt
+	scale   = 1.0
+)
+
 type ChartLine struct {
-	Kind   string // "lyric", "section", "note", "blank", "colbreak"
+	Kind   string   // "lyric", "section", "note", "blank", "colbreak", "bars"
+	Bars   []string // for "bars": an instrumental row such as | C | F | C | G |
 	Text   string
 	Chords []ChartMark
 }
@@ -55,11 +66,11 @@ var reMark = regexp.MustCompile(`\[[^\]]+\]`)
 func charWidth(r rune) float64 {
 	switch {
 	case r == '　':
-		return lyricPt
+		return baseLyricPt
 	case r < 0x2E80:
-		return lyricPt * 0.5
+		return baseLyricPt * 0.5
 	}
-	return lyricPt
+	return baseLyricPt
 }
 
 func textWidth(s string) float64 {
@@ -87,13 +98,7 @@ func ParseChart(src string) Chart {
 					c.Key = v
 				case "intro":
 					for _, row := range strings.Split(v, "//") {
-						var bars []string
-						for _, b := range strings.Split(strings.Trim(strings.TrimSpace(row), "|"), "|") {
-							if b = strings.TrimSpace(b); b != "" {
-								bars = append(bars, b)
-							}
-						}
-						if len(bars) > 0 {
+						if bars := parseBars(row); len(bars) > 0 {
 							c.Intro = append(c.Intro, bars)
 						}
 					}
@@ -110,16 +115,90 @@ func ParseChart(src string) Chart {
 			c.Lines = append(c.Lines, ChartLine{Kind: "blank"})
 		case s == "===":
 			c.Lines = append(c.Lines, ChartLine{Kind: "colbreak"})
+		case strings.HasPrefix(s, "|") && !reMark.MatchString(s):
+			c.Lines = append(c.Lines, ChartLine{Kind: "bars", Bars: parseBars(s)})
 		case strings.HasPrefix(s, "##"):
 			c.Lines = append(c.Lines, ChartLine{Kind: "section", Text: strings.TrimSpace(strings.TrimLeft(s, "#"))})
 		case (strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")")) ||
 			(strings.HasPrefix(s, "（") && strings.HasSuffix(s, "）")):
 			c.Lines = append(c.Lines, ChartLine{Kind: "note", Text: s})
 		default:
-			c.Lines = append(c.Lines, parseLyric(s))
+			c.Lines = append(c.Lines, splitLong(parseLyric(s))...)
 		}
 	}
 	return c
+}
+
+// splitLong breaks a lyric line wider than a column into several lines,
+// preferring a space near the middle, and keeps each chord on its syllable.
+func splitLong(l ChartLine) []ChartLine {
+	if textWidth(l.Text) <= colWidthPt {
+		return []ChartLine{l}
+	}
+	type pos struct {
+		byteAt int
+		x      float64
+		space  bool
+	}
+	var ps []pos
+	x := 0.0
+	for i, r := range l.Text {
+		ps = append(ps, pos{i, x, r == ' ' || r == '　'})
+		x += charWidth(r)
+	}
+	total := x
+	best, bestScore := -1, 1e18
+	for k, p := range ps {
+		if k == 0 || p.x > colWidthPt {
+			continue
+		}
+		score := p.x - total/2
+		if score < 0 {
+			score = -score
+		}
+		if !p.space {
+			score += 10000 // break inside a phrase only if there is no space
+		}
+		if score < bestScore {
+			best, bestScore = k, score
+		}
+	}
+	if best < 0 {
+		return []ChartLine{l}
+	}
+	cut := ps[best]
+	leftText := strings.TrimRight(l.Text[:cut.byteAt], " 　")
+	rest := l.Text[cut.byteAt:]
+	shift := cut.x
+	if cut.space {
+		_, w := utf8.DecodeRuneInString(rest)
+		rest = rest[w:]
+		shift += charWidth([]rune(l.Text[cut.byteAt:])[0])
+	}
+	left := ChartLine{Kind: "lyric", Text: leftText}
+	right := ChartLine{Kind: "lyric", Text: rest}
+	for _, m := range l.Chords {
+		if m.X < cut.x || (!cut.space && m.X < shift) {
+			left.Chords = append(left.Chords, m)
+		} else {
+			m.X -= shift
+			if m.X < 0 {
+				m.X = 0
+			}
+			right.Chords = append(right.Chords, m)
+		}
+	}
+	return append([]ChartLine{left}, splitLong(right)...)
+}
+
+func parseBars(row string) []string {
+	var bars []string
+	for _, b := range strings.Split(strings.Trim(strings.TrimSpace(row), "|"), "|") {
+		if b = strings.TrimSpace(b); b != "" {
+			bars = append(bars, b)
+		}
+	}
+	return bars
 }
 
 func parseLyric(s string) ChartLine {
@@ -218,7 +297,7 @@ func chordLine(marks []ChartMark) string {
 	var runs strings.Builder
 	lastEnd := -99.0
 	for _, m := range marks {
-		pos := m.X - 5 // '|' sits just left of the syllable
+		pos := m.X*scale - 5*scale // '|' sits just left of the syllable
 		if pos < lastEnd+4 {
 			pos = lastEnd + 4
 		}
@@ -264,46 +343,59 @@ func BuildChartDocx(c Chart) ([]byte, []string, error) {
 	}
 	body.WriteString(para(tabs([]float64{523}, "right")+spacing(4), head))
 
-	for i, bars := range c.Intro {
-		var stops []float64
-		for k := range bars {
-			stops = append(stops, 56.7+float64(k)*102)
-		}
+	// The intro row is always there, empty bars when the source has none.
+	intro := c.Intro
+	if len(intro) == 0 {
+		intro = [][]string{{"", "", "", ""}}
+	}
+	for i, bars := range intro {
 		label := ""
 		if i == 0 {
 			label = "Intro:"
 		}
-		runs := wrun(rPr("Arial", "", 12, true, "", ""), label)
-		for _, b := range bars {
-			runs += tabRun() + chordRuns("| "+b)
-		}
-		body.WriteString(para(tabs(stops, "left")+spacing(2), runs))
+		body.WriteString(barRow(label, bars, 56.7, 102, baseChordPt))
 	}
 
 	// end of the one-column heading section
-	body.WriteString(`<w:p><w:pPr>` + spacing(0) + sectPr(1, false) + `</w:pPr></w:p>`)
+	body.WriteString(`<w:p><w:pPr>` + spacing(0) + sectPr(1, false) +
+		`<w:rPr><w:sz w:val="4"/></w:rPr></w:pPr></w:p>`)
 
-	for _, l := range c.Lines {
+	header := 14*1.3 + 4 + 9*1.2 + 4 + float64(len(intro))*(baseChordPt*1.25+2) + 4
+	split := layoutColumns(c.Lines, pageHeight-2*36-header-24)
+	defer func() { lyricPt, chordPt, scale = baseLyricPt, baseChordPt, 1 }()
+
+	for i, l := range c.Lines {
+		var ps []string
 		switch l.Kind {
 		case "blank":
-			body.WriteString(para(spacing(0), ""))
+			ps = append(ps, `<w:p><w:pPr>`+spacing(0)+
+				fmt.Sprintf(`<w:rPr><w:sz w:val="%d"/></w:rPr>`, int(12*scale))+`</w:pPr></w:p>`)
 		case "colbreak":
-			body.WriteString(para(spacing(0), `<w:r><w:br w:type="column"/></w:r>`))
+			continue
 		case "section":
 			bdr := `<w:bdr w:val="single" w:sz="6" w:space="0" w:color="000000"/>`
-			body.WriteString(para(`<w:spacing w:before="200" w:after="40" w:line="240" w:lineRule="auto"/>`,
-				wrun(rPr("Arial", "", 12, true, "", bdr), l.Text)))
+			ps = append(ps, para(fmt.Sprintf(`<w:spacing w:before="%d" w:after="40" w:line="240" w:lineRule="auto"/>`, int(200*scale)),
+				wrun(rPr("Arial", "", 12*scale, true, "", bdr), l.Text)))
 		case "note":
-			body.WriteString(para(spacing(2), wrun(rPr("Arial", "SimHei", 9, false, noteGrey, ""), l.Text)))
+			ps = append(ps, para(spacing(2), wrun(rPr("Arial", "SimHei", 9, false, noteGrey, ""), l.Text)))
+		case "bars":
+			ps = append(ps, barRow("", l.Bars, 0, 60*scale, chordPt))
 		case "lyric":
 			if len(l.Chords) > 0 {
-				body.WriteString(chordLine(l.Chords))
+				ps = append(ps, chordLine(l.Chords))
 			}
-			body.WriteString(para(spacing(1), wrun(rPr("SimHei", "SimHei", lyricPt, false, "", ""), l.Text)))
-			if w := textWidth(l.Text); w > colWidthPt {
+			ps = append(ps, para(spacing(1), wrun(rPr("SimHei", "SimHei", lyricPt, false, "", ""), l.Text)))
+			if w := textWidth(l.Text) * scale; w > colWidthPt {
 				warns = append(warns, "Line may be too long for one column: "+l.Text)
 			}
 		}
+		if i == split && len(ps) > 0 {
+			ps[0] = strings.Replace(ps[0], "</w:pPr>", `</w:pPr><w:r><w:br w:type="column"/></w:r>`, 1)
+		}
+		body.WriteString(strings.Join(ps, ""))
+	}
+	if scale < minScale+0.001 {
+		warns = append(warns, "The song is very long — it may not fit on one page even at the smallest size.")
 	}
 
 	doc := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
@@ -338,6 +430,122 @@ func BuildChartDocx(c Chart) ([]byte, []string, error) {
 		return nil, nil, err
 	}
 	return out.Bytes(), warns, nil
+}
+
+// barRow writes a row of chord bars: label, then | C | F | … at tab stops.
+func barRow(label string, bars []string, first, step, pt float64) string {
+	var stops []float64
+	runs := ""
+	if label != "" {
+		runs = wrun(rPr("Arial", "", 12, true, "", ""), label)
+	}
+	for k, b := range bars {
+		pos := first + float64(k)*step
+		if pos >= 1 {
+			stops = append(stops, pos)
+			runs += tabRun()
+		}
+		saved := chordPt
+		chordPt = pt
+		runs += chordRuns("| " + b)
+		chordPt = saved
+	}
+	end := first + float64(len(bars))*step
+	stops = append(stops, end)
+	runs += tabRun() + wrun(rPr("Arial", "", pt, true, chordBlue, ""), "|")
+	return para(tabs(stops, "left")+spacing(2), runs)
+}
+
+// lineHeight estimates a line's height in points at the current scale.
+func lineHeight(l ChartLine) float64 {
+	switch l.Kind {
+	case "blank":
+		return 12 * scale * 1.2
+	case "section":
+		return 10*scale + 12*scale*1.25 + 2
+	case "note":
+		return 9*1.25 + 2
+	case "bars":
+		return chordPt*1.25 + 2
+	case "lyric":
+		h := lyricPt*1.25 + 1
+		if len(l.Chords) > 0 {
+			h += chordPt * 1.25
+		}
+		return h
+	}
+	return 0
+}
+
+func setScale(s float64) {
+	scale = s
+	lyricPt = baseLyricPt * s
+	chordPt = baseChordPt * s
+}
+
+// layoutColumns picks where the second column starts so both columns are about
+// the same height, and shrinks the fonts until the taller column fits avail.
+// A "===" line in the text forces the split. Returns the index of the first
+// line of the right column (-1 for none).
+func layoutColumns(lines []ChartLine, avail float64) int {
+	forced := -1
+	for i, l := range lines {
+		if l.Kind == "colbreak" {
+			forced = i + 1
+			for forced < len(lines) && lines[forced].Kind == "blank" {
+				forced++
+			}
+			break
+		}
+	}
+	best := -1
+	s := 1.0
+	for iter := 0; iter < 6; iter++ {
+		setScale(s)
+		h := make([]float64, len(lines))
+		total := 0.0
+		for i, l := range lines {
+			h[i] = lineHeight(l)
+			total += h[i]
+		}
+		bestCost, tall := 1e18, total
+		left := 0.0
+		for i := 0; i < len(lines); i++ {
+			if i > 0 {
+				left += h[i-1]
+			}
+			k := lines[i].Kind
+			if k == "blank" || k == "colbreak" {
+				continue
+			}
+			if forced >= 0 && i != forced {
+				continue
+			}
+			right := total - left
+			cost := left
+			if right > cost {
+				cost = right
+			}
+			if k != "section" {
+				cost += 10000 // start the column at a section whenever there is one
+			}
+			if cost < bestCost {
+				bestCost, best = cost, i
+				tall = left
+				if right > tall {
+					tall = right
+				}
+			}
+		}
+		if tall <= avail || s <= minScale {
+			break
+		}
+		s *= avail / tall * 0.99
+		if s < minScale {
+			s = minScale
+		}
+	}
+	return best
 }
 
 // ChartFileName gives "G Key - Title.docx", like the charts already on file.

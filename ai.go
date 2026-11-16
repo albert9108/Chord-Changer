@@ -49,9 +49,11 @@ RULES
 4. A bar that starts on a rest/held note with no syllable: put the mark at the end of the previous line after a full-width space, e.g. 求你别离开我　[G]
 5. Chord spelling: sharps only, except Bb. Db->C#, Eb->D#, Ab->G#, Gb->F#. Keep slash chords (D/F#), 7, maj7, sus4, m, dim etc. as written.
 6. If the source says Capo N, keep the chord shapes as written and use the shape key for "key:".
+7a. ALWAYS write the intro: line. If the source shows no intro chords, write "intro:" with nothing after it.
+7b. An instrumental section with no lyrics (interlude, solo, instrumental bridge): write the section name, then its bars on one line like | C | F | C | G | — no lyrics and no bracket note.
 7. Section names in English on their own line after "## ": Intro is the intro: line; then Verse, Pre-Chorus, Chorus, Bridge, Ending (Verse 2, Chorus 2 when they differ). Write each section once; do not repeat sections that repeat identically. If the source has a rap/interlude part before the bridge, merge it into Bridge.
 8. Keep lyric lines short: at most 13 Chinese characters per line (Latin letters count half). Split long phrases at natural pauses. Use one space between phrases on the same line.
-9. Put "===" on its own line before the section that should start the second column, choosing it so the two columns are roughly equal in length.
+9. Never write "===" — the app balances the two columns and fits the page by itself.
 10. Use the lyrics the user typed as the lyric source when given (convert to Simplified); otherwise read them from the screenshots.
 11. If something is missing (e.g. a section has no chords in any screenshot), still write the lyrics and add a line in round brackets such as (此段截图没有 chord，请补上).
 12. If a section repeats with different chords (for example the last chorus moves up a key), write it again as its own section, e.g. "## Chorus 2 (Key D)", with the chords exactly as shown.`

@@ -1,6 +1,6 @@
 # Chord Key Changer — User Guide
 
-**Version:** v1.3.1 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
+**Version:** v1.3.2 · **Platform:** Windows 10 / 11 (64-bit) · **Install:** none, single `.exe`
 
 Two tabs:
 
@@ -127,8 +127,9 @@ intro: | G | D/F# | Em | C |
 | `[C]` before a syllable | a bar starts on that syllable with chord C |
 | `[Em7 D]` | two chords in one bar |
 | `## Verse` | boxed section name |
-| `===` | start the second column here |
+| `===` | (optional) force the second column to start here — normally the app balances the columns itself |
 | `(…)` line | small grey note |
+| `\| C \| F \| C \| G \|` line | instrumental section, shown as a chord row |
 | `intro:` with `//` | a second intro row, e.g. `\| C \| D \| // \| Am7 \| D \|` |
 
 Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a held chord); sharps except Bb; capo charts keep the shape key; at most 13 Chinese characters a line.
@@ -145,6 +146,7 @@ Rules the AI follows: Simplified Chinese; one chord per bar (no repeats of a hel
 
 | Version | Date | Changes |
 |---|---|---|
+| v1.3.2 | 2026-11-16 | Always one page: columns balanced automatically at a section, fonts shrink to fit; long lines split at a space; Intro row always shown (empty if no intro); instrumental sections as a chord row |
 | v1.3.1 | 2026-11-11 | Fix "AI returned no chart": leave room for Sonnet 5.5's built-in thinking; clearer AI error messages; key-change choruses written as their own section |
 | v1.3.0 (build-6) | 2026-11-11 | **Make Chart** tab: chart text → Word chart in the house layout; Read with AI from chord screenshots (files, drag-drop or clipboard) |
 | v1.0.0 | 2026-11-08 | First release: PDF + DOCX, key detection, Open/Save dialogs, Bb-only-flat spelling |
