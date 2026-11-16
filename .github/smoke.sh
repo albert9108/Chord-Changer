@@ -65,6 +65,35 @@ sleep 4
 tap_text "Save"
 sleep 4
 shot converted
+# Read with AI with a fake key: proves screenshots load and the API is reachable
+# (expects "the API key was rejected").
+adb shell input keyevent KEYCODE_BACK
+sleep 1
+python3 -c "
+from PIL import Image, ImageDraw
+im=Image.new('RGB',(900,1800),'white'); d=ImageDraw.Draw(im)
+for i in range(30): d.text((40,40+i*58),'C        G        Am       F', fill='black')
+im.save('/tmp/chord.png')"
+adb push /tmp/chord.png /sdcard/Download/chord.png >/dev/null
+tap_text "Make Chart"
+sleep 1
+tap_text "Add screenshots"
+sleep 4
+shot img_picker
+tap_text "Files"
+sleep 3
+tap_text "chord.png"
+sleep 5
+shot img_added
+tap_text "sk-ant"
+sleep 1
+adb shell input text "sk-ant-fake-key-for-test"
+adb shell input keyevent KEYCODE_BACK
+sleep 1
+tap_text "Read with AI"
+sleep 25
+shot ai_result
+
 echo "===LOGCAT==="
 adb logcat -d | grep -E "FATAL|AndroidRuntime|chordkey|GoLog" | head -60
 if adb logcat -d | grep -q "FATAL EXCEPTION"; then echo "APP CRASHED"; exit 1; fi
