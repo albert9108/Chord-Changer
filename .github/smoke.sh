@@ -13,6 +13,22 @@ im=im.resize((360, int(im.height*360/im.width))); im.save('/tmp/$1.jpg', quality
   echo "===SHOT $1 BEGIN==="; base64 -w 100 "/tmp/$1.jpg"; echo "===SHOT $1 END==="
 }
 
+tap_attr() { # tap the first node whose XML matches regex $1
+  adb shell uiautomator dump /sdcard/ui.xml >/dev/null
+  adb pull /sdcard/ui.xml /tmp/ui.xml >/dev/null
+  python3 - "$1" <<'PY'
+import re, sys, subprocess
+xml = open('/tmp/ui.xml', encoding='utf-8').read()
+for node in re.findall(r'<node [^>]*>', xml):
+    if re.search(sys.argv[1], node):
+        b = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
+        x = (int(b.group(1)) + int(b.group(3))) // 2; y = (int(b.group(2)) + int(b.group(4))) // 2
+        subprocess.run(['adb', 'shell', 'input', 'tap', str(x), str(y)]); print('tapped', sys.argv[1], x, y); break
+else:
+    print('NOT FOUND', sys.argv[1])
+PY
+}
+
 tap_text() { # tap the first view whose text starts with $1
   adb shell uiautomator dump /sdcard/ui.xml >/dev/null
   adb pull /sdcard/ui.xml /tmp/ui.xml >/dev/null
@@ -74,18 +90,23 @@ from PIL import Image, ImageDraw
 im=Image.new('RGB',(900,1800),'white'); d=ImageDraw.Draw(im)
 for i in range(30): d.text((40,40+i*58),'C        G        Am       F', fill='black')
 im.save('/tmp/chord.png')"
-adb push /tmp/chord.png /sdcard/Download/chord.png >/dev/null
+adb push /tmp/chord.png /sdcard/Pictures/chord.png >/dev/null
+adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/chord.png >/dev/null
+adb shell content call --uri content://media --method scan_volume --arg external_primary >/dev/null 2>&1
+sleep 3
 tap_text "Make Chart"
 sleep 1
 tap_text "Add screenshots"
-sleep 4
-shot img_picker
-tap_text "Files"
-sleep 3
-tap_text "chord.png"
 sleep 5
+shot img_picker
+tap_attr 'content-desc="(Photo|Image)[^"]*"'
+sleep 2
+tap_text "Add"
+sleep 2
+tap_text "Done"
+sleep 6
 shot img_added
-tap_text "sk-ant"
+tap_attr 'password="true"'
 sleep 1
 adb shell input text "sk-ant-fake-key-for-test"
 adb shell input keyevent KEYCODE_BACK
