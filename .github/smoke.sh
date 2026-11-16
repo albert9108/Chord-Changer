@@ -106,9 +106,9 @@ sleep 2
 tap_text "Done"
 sleep 6
 shot img_added
-adb shell input swipe 160 420 160 150 400
-sleep 1
-tap_attr 'class="android.widget.EditText"[^>]*pass''word="true"'
+tap_text "Read with AI"     # no key yet: the app asks for one and focuses the key box
+sleep 2
+tap_text "OK"
 sleep 1
 adb shell input text "sk-ant-fake-key-for-test"
 sleep 1
